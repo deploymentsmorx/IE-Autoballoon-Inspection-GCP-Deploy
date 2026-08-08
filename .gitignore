@@ -1,0 +1,38 @@
+# Secrets
+.env
+backend/.env
+*.pem
+*.key
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env.local
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Runtime / job data
+backend/data/jobs/
+data/jobs/
+data/learned_feedback.json
+backend/data/learned_feedback.json
+*.db
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Temp renders
+_*.jpg
+_*.png
+*.ocr.pdf

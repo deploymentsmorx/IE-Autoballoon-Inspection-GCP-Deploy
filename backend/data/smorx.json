@@ -1,0 +1,22 @@
+{
+  "users": [
+    {
+      "id": "u-admin",
+      "username": "admin",
+      "email": "admin@smorx.ai",
+      "full_name": "Super Admin",
+      "password_hash": "sha256$c05d567dbb28ce59$cd013c53f5e8a3d074f593ae1a592765db6778267d3ae1201a5ecdc9d081a75c",
+      "role": "super_admin",
+      "org_id": null,
+      "active": true,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "delete": true
+      }
+    }
+  ],
+  "organizations": [],
+  "sessions": {},
+  "updated_at": "2026-08-05T04:56:24+00:00"
+}
