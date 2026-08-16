@@ -1,0 +1,11 @@
+# Frontend
+node_modules/
+dist/
+dist-desktop/
+.env
+.env.local
+*.local
+
+# Tauri / Rust
+src-tauri/target/
+src-tauri/gen/

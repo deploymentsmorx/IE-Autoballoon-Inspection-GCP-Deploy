@@ -9,11 +9,10 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 
 from . import local_store
+from .core import database as dbmod
 from .db import hash_password, verify_password
 from .postgres import (
     Organization,
-    SessionLocal,
-    USE_POSTGRES,
     User,
     init_db,
     org_to_dict,
@@ -27,8 +26,8 @@ def startup(hash_pw=hash_password) -> str:
 
 def find_user_by_login(key: str) -> dict | None:
     key = key.strip().lower()
-    if USE_POSTGRES and SessionLocal is not None:
-        with SessionLocal() as db:
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
+        with dbmod.SessionLocal() as db:
             users = db.scalars(select(User)).all()
             user = next(
                 (u for u in users if u.username.lower() == key or u.email.lower() == key),
@@ -47,8 +46,8 @@ def find_user_by_login(key: str) -> dict | None:
 
 
 def get_user(user_id: str) -> dict | None:
-    if USE_POSTGRES and SessionLocal is not None:
-        with SessionLocal() as db:
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
+        with dbmod.SessionLocal() as db:
             user = db.get(User, user_id)
             return user_to_dict(user) if user else None
     db = local_store.load()
@@ -56,8 +55,8 @@ def get_user(user_id: str) -> dict | None:
 
 
 def list_orgs() -> list[dict]:
-    if USE_POSTGRES and SessionLocal is not None:
-        with SessionLocal() as db:
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
+        with dbmod.SessionLocal() as db:
             orgs = db.scalars(select(Organization).order_by(Organization.name)).all()
             out = []
             for o in orgs:
@@ -77,7 +76,7 @@ def list_orgs() -> list[dict]:
 def create_org(name: str) -> dict:
     oid = f"org-{secrets.token_hex(4)}"
     trial = (datetime.now(timezone.utc) + timedelta(days=30)).date()
-    if USE_POSTGRES and SessionLocal is not None:
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
         org = Organization(
             id=oid,
             name=name.strip(),
@@ -85,7 +84,7 @@ def create_org(name: str) -> dict:
             status="Active",
             trial_ends=trial,
         )
-        with SessionLocal() as db:
+        with dbmod.SessionLocal() as db:
             db.add(org)
             db.commit()
             return org_to_dict(org, 0)
@@ -103,8 +102,8 @@ def create_org(name: str) -> dict:
 
 
 def list_engineers() -> list[dict]:
-    if USE_POSTGRES and SessionLocal is not None:
-        with SessionLocal() as db:
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
+        with dbmod.SessionLocal() as db:
             users = db.scalars(select(User).where(User.role != "super_admin")).all()
             return [
                 {
@@ -142,10 +141,16 @@ def list_engineers() -> list[dict]:
     ]
 
 
-def add_engineer(full_name: str, email: str, org_id: str, password: str) -> dict:
+def add_engineer(
+    full_name: str,
+    email: str,
+    org_id: str,
+    password: str,
+    customer_id: str | None = None,
+) -> dict:
     email = email.strip().lower()
-    if USE_POSTGRES and SessionLocal is not None:
-        with SessionLocal() as db:
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
+        with dbmod.SessionLocal() as db:
             if not db.get(Organization, org_id):
                 raise HTTPException(status_code=400, detail="Organization not found")
             if db.scalar(select(User).where(User.email == email)):
@@ -164,10 +169,12 @@ def add_engineer(full_name: str, email: str, org_id: str, password: str) -> dict
                 password_hash=hash_password(password),
                 role="engineer",
                 org_id=org_id,
+                customer_id=customer_id,
                 active=False,
                 perm_read=False,
                 perm_write=False,
                 perm_delete=False,
+                must_change_password=True,
             )
             db.add(user)
             db.commit()
@@ -199,6 +206,7 @@ def add_engineer(full_name: str, email: str, org_id: str, password: str) -> dict
         "org_id": org_id,
         "active": False,
         "permissions": {"read": False, "write": False, "delete": False},
+        "must_change_password": True,
     }
     db["users"].append(user)
     local_store.save(db)
@@ -211,8 +219,8 @@ def add_engineer(full_name: str, email: str, org_id: str, password: str) -> dict
 
 
 def update_access(user_id: str, active: bool, read: bool, write: bool, delete: bool) -> dict:
-    if USE_POSTGRES and SessionLocal is not None:
-        with SessionLocal() as db:
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
+        with dbmod.SessionLocal() as db:
             user = db.get(User, user_id)
             if not user:
                 raise HTTPException(status_code=404, detail="User not found")
@@ -238,3 +246,55 @@ def update_access(user_id: str, active: bool, read: bool, write: bool, delete: b
 
 def grant_full(user_id: str) -> dict:
     return update_access(user_id, True, True, True, True)
+
+
+def change_password(user_id: str, current_password: str, new_password: str) -> dict:
+    user = get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not verify_password(current_password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
+        with dbmod.SessionLocal() as db:
+            row = db.get(User, user_id)
+            if row is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            row.password_hash = hash_password(new_password)
+            row.must_change_password = False
+            db.commit()
+        return {"ok": True}
+
+    db = local_store.load()
+    u = next((x for x in db["users"] if x["id"] == user_id), None)
+    if not u:
+        raise HTTPException(status_code=404, detail="User not found")
+    u["password_hash"] = hash_password(new_password)
+    u["must_change_password"] = False
+    local_store.save(db)
+    return {"ok": True}
+
+
+def delete_engineer(user_id: str) -> dict:
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
+        with dbmod.SessionLocal() as db:
+            user = db.get(User, user_id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            if user.role == "super_admin":
+                raise HTTPException(status_code=400, detail="Cannot delete super admin")
+            db.delete(user)
+            db.commit()
+        return {"ok": True}
+
+    db = local_store.load()
+    user = next((u for u in db["users"] if u["id"] == user_id), None)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.get("role") == "super_admin":
+        raise HTTPException(status_code=400, detail="Cannot delete super admin")
+    db["users"] = [u for u in db["users"] if u["id"] != user_id]
+    local_store.save(db)
+    return {"ok": True}

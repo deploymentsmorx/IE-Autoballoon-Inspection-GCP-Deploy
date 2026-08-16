@@ -1,12 +1,22 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
-import type { Balloon } from "../api";
+import type { Balloon, PageGeometry } from "../api";
 import { useAuthImage } from "../hooks/useAuthImage";
 
 export type Mode = "view" | "create" | "edit" | "delete";
 
-type Box = { x0: number; y0: number; x1: number; y1: number };
+/** True when left-drag should pan instead of edit/create/delete. */
+function shouldPan(e: ReactPointerEvent, mode: Mode, spaceDown: boolean) {
+  return (
+    e.button === 1 ||
+    e.button === 2 ||
+    spaceDown ||
+    e.altKey ||
+    e.shiftKey ||
+    mode === "view"
+  );
+}
 
-const PREVIEW_SCALE = 1.35;
+type Box = { x0: number; y0: number; x1: number; y1: number };
 
 type Props = {
   imageUrl: string;
@@ -14,16 +24,46 @@ type Props = {
   mode: Mode;
   selected: number | null;
   busy?: boolean;
+  /** Draw balloons/arrows live on the image (moves instantly while editing). */
+  liveDraw?: boolean;
+  /** Maps unrotated PDF balloon coords ↔ preview image pixels (handles page rotation). */
+  pageGeometry?: PageGeometry | null;
   onSelect: (no: number | null) => void;
   onCreate: (box: { x: number; y: number; width: number; height: number }) => void;
-  onMove: (no: number, x: number, y: number) => void;
+  /** Move balloon circle (bx/by) and keep dim tip (x/y) relative. */
+  onMove: (no: number, patch: Partial<Balloon>) => void;
+  onMoveStart?: () => void;
   onMoveEnd: () => void;
   onDelete: (no: number) => void;
 };
 
+function applyMat(m: number[] | undefined, x: number, y: number) {
+  if (!m || m.length < 6) return { x, y };
+  const [a, b, c, d, e, f] = m;
+  return { x: a * x + c * y + e, y: b * x + d * y + f };
+}
+
+/** Circle centre in PDF space (leader balloon), falling back to offset from dim tip. */
+function balloonCenterPdf(b: Balloon) {
+  if (b.bx != null && b.by != null && Number.isFinite(b.bx) && Number.isFinite(b.by)) {
+    return { x: b.bx, y: b.by };
+  }
+  const w = b.width || 20;
+  const h = b.height || 12;
+  const tipX = b.x + w / 2;
+  const tipY = b.y + h / 2;
+  // Match typical auto-balloon placement: short leader to the left of the dim
+  return { x: tipX - Math.max(28, h * 3.2), y: tipY };
+}
+
+function tipCenterPdf(b: Balloon) {
+  return { x: b.x + (b.width || 20) / 2, y: b.y + (b.height || 12) / 2 };
+}
+
 /**
  * PDF-reader style zoom/pan viewport + balloon create/edit/delete on canvas.
- * Coordinates are in image-pixel space, mapped to PDF points via PREVIEW_SCALE.
+ * Balloon x/y are dim tip boxes; bx/by are circle centres (unrotated mediabox).
+ * Preview PNG already has drawn balloons — overlay is selection/hit only (no duplicate numbers).
  */
 export default function BalloonCanvas({
   imageUrl,
@@ -31,9 +71,12 @@ export default function BalloonCanvas({
   mode,
   selected,
   busy,
+  liveDraw,
+  pageGeometry,
   onSelect,
   onCreate,
   onMove,
+  onMoveStart,
   onMoveEnd,
   onDelete,
 }: Props) {
@@ -42,6 +85,7 @@ export default function BalloonCanvas({
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [ready, setReady] = useState(0);
   const [zoomPct, setZoomPct] = useState(100);
+  const [savingHint, setSavingHint] = useState(false);
 
   const zoomRef = useRef(1);
   const panRef = useRef({ x: 0, y: 0 });
@@ -53,7 +97,18 @@ export default function BalloonCanvas({
   const boxRef = useRef<Box | null>(null);
   const [liveBox, setLiveBox] = useState<Box | null>(null);
   const dragNoRef = useRef<number | null>(null);
+  const dragOriginRef = useRef<{
+    ix: number;
+    iy: number;
+    bx: number;
+    by: number;
+    x: number;
+    y: number;
+  } | null>(null);
+  /** Instant drag coords (avoids waiting on React setState to move circle/arrow). */
+  const dragLiveRef = useRef<{ no: number; bx: number; by: number; x: number; y: number } | null>(null);
   const movedRef = useRef(false);
+  const fittedUrlRef = useRef("");
 
   const balloonsRef = useRef(balloons);
   balloonsRef.current = balloons;
@@ -61,22 +116,78 @@ export default function BalloonCanvas({
   modeRef.current = mode;
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const geomRef = useRef(pageGeometry);
+  geomRef.current = pageGeometry;
+  const busyRef = useRef(!!busy);
+  busyRef.current = !!busy;
   const { src, failed, loading } = useAuthImage(imageUrl);
 
   useEffect(() => {
+    setSavingHint(!!busy);
+  }, [busy]);
+
+  const previewScale = () => {
+    const img = imgRef.current;
+    const g = geomRef.current;
+    if (g && g.page_width > 0 && img?.naturalWidth) {
+      return img.naturalWidth / g.page_width;
+    }
+    return g?.preview_scale || 1.35;
+  };
+
+  /** PDF unrotated point → image pixel (preview space). */
+  const pdfPtToImg = (x: number, y: number) => {
+    const scale = previewScale();
+    const p = applyMat(geomRef.current?.rot, x, y);
+    return { x: p.x * scale, y: p.y * scale };
+  };
+
+  const pdfBoxToImg = (x: number, y: number, w: number, h: number) => {
+    const p0 = pdfPtToImg(x, y);
+    const p1 = pdfPtToImg(x + w, y + h);
+    const ix0 = Math.min(p0.x, p1.x);
+    const iy0 = Math.min(p0.y, p1.y);
+    const ix1 = Math.max(p0.x, p1.x);
+    const iy1 = Math.max(p0.y, p1.y);
+    return { x: ix0, y: iy0, w: Math.max(2, ix1 - ix0), h: Math.max(2, iy1 - iy0) };
+  };
+
+  /** Image pixel → PDF unrotated point. */
+  const imgPxToPdf = (ix: number, iy: number) => {
+    const scale = previewScale();
+    const dx = ix / scale;
+    const dy = iy / scale;
+    return applyMat(geomRef.current?.derot, dx, dy);
+  };
+
+  useEffect(() => {
     if (!src) {
-      imgRef.current = null;
       if (failed) setReady((n) => n + 1);
       return;
     }
     const img = new Image();
     img.onload = () => {
+      const prev = imgRef.current;
       imgRef.current = img;
-      fitToView();
+      const sameSize =
+        prev &&
+        prev.naturalWidth === img.naturalWidth &&
+        prev.naturalHeight === img.naturalHeight;
+      const baseUrl = imageUrl.split("&v=")[0];
+      // Fit only on first image / new drawing — keep zoom/pan across preview refreshes
+      if (!prev || fittedUrlRef.current !== baseUrl || !sameSize) {
+        if (!prev || fittedUrlRef.current !== baseUrl) {
+          fitToView();
+        } else {
+          redraw();
+        }
+        fittedUrlRef.current = baseUrl;
+      } else {
+        redraw();
+      }
       setReady((n) => n + 1);
     };
     img.onerror = () => {
-      imgRef.current = null;
       setReady((n) => n + 1);
     };
     img.src = src;
@@ -84,8 +195,14 @@ export default function BalloonCanvas({
   }, [src]);
 
   useEffect(() => {
+    const isTypingTarget = (t: EventTarget | null) => {
+      if (!(t instanceof HTMLElement)) return false;
+      const tag = t.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable;
+    };
     const down = (e: KeyboardEvent) => {
       if (e.code === "Space") {
+        if (isTypingTarget(e.target)) return;
         spaceRef.current = true;
         e.preventDefault();
       }
@@ -154,17 +271,6 @@ export default function BalloonCanvas({
     redraw();
   };
 
-  const imgPxToPdf = (ix: number, iy: number) => ({
-    x: ix / PREVIEW_SCALE,
-    y: iy / PREVIEW_SCALE,
-  });
-  const pdfToImgPx = (x: number, y: number, w: number, h: number) => ({
-    x: x * PREVIEW_SCALE,
-    y: y * PREVIEW_SCALE,
-    w: w * PREVIEW_SCALE,
-    h: h * PREVIEW_SCALE,
-  });
-
   const clientToImg = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -197,33 +303,117 @@ export default function BalloonCanvas({
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(img, pan.x, pan.y, img.naturalWidth * z, img.naturalHeight * z);
 
-    // Balloon markers (small numbered chips at dim centers — not full yellow sheets)
-    for (const b of balloonsRef.current) {
-      const r = pdfToImgPx(b.x, b.y, b.width || 20, b.height || 12);
-      const cx = pan.x + (r.x + r.w / 2) * z;
-      const cy = pan.y + (r.y + r.h / 2) * z;
-      const active = selectedRef.current === b.balloon;
-      const rad = Math.max(9, 11 * Math.min(z, 2));
-      ctx.beginPath();
-      ctx.arc(cx, cy, rad, 0, Math.PI * 2);
-      ctx.fillStyle = active ? "rgba(61,126,255,0.95)" : "rgba(255,247,191,0.95)";
-      ctx.fill();
-      ctx.lineWidth = active ? 2.5 : 1.5;
-      ctx.strokeStyle = active ? "#3d7eff" : "#c62828";
-      ctx.stroke();
-      ctx.fillStyle = active ? "#fff" : "#b71c1c";
-      ctx.font = `bold ${Math.max(9, 10 * Math.min(z, 1.8))}px Segoe UI, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(String(b.balloon), cx, cy + 0.5);
+    const m = modeRef.current;
+    const showHandles = m === "edit" || m === "delete" || m === "create";
 
-      // In edit/create show thin dim box for selected only
-      if (active) {
+    const drawArrowHead = (
+      tipX: number,
+      tipY: number,
+      fromX: number,
+      fromY: number,
+      size: number,
+    ) => {
+      const dx = tipX - fromX;
+      const dy = tipY - fromY;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const bx = tipX - ux * size;
+      const by = tipY - uy * size;
+      const px = -uy;
+      const py = ux;
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(bx + px * size * 0.45, by + py * size * 0.45);
+      ctx.lineTo(bx - px * size * 0.45, by - py * size * 0.45);
+      ctx.closePath();
+      ctx.fill();
+    };
+
+    // Live balloons on the clean input drawing — circle + leader move with drag.
+    for (const raw of balloonsRef.current) {
+      const live = dragLiveRef.current;
+      const b =
+        live && live.no === raw.balloon
+          ? { ...raw, bx: live.bx, by: live.by, x: live.x, y: live.y }
+          : raw;
+      const cPdf = balloonCenterPdf(b);
+      const tPdf = tipCenterPdf(b);
+      const cImg = pdfPtToImg(cPdf.x, cPdf.y);
+      const tImg = pdfPtToImg(tPdf.x, tPdf.y);
+      const cx = pan.x + cImg.x * z;
+      const cy = pan.y + cImg.y * z;
+      const tx = pan.x + tImg.x * z;
+      const ty = pan.y + tImg.y * z;
+      const active = selectedRef.current === b.balloon;
+      const rad = Math.max(10, 11 * Math.min(Math.max(z, 0.55), 2.4));
+      const stroke = active ? "#3d7eff" : "#c62828";
+      const fill = active ? "rgba(61,126,255,0.95)" : "rgba(255,247,191,0.95)";
+
+      if (liveDraw) {
+        const dx = tx - cx;
+        const dy = ty - cy;
+        const dist = Math.hypot(dx, dy) || 1;
+        const ux = dx / dist;
+        const uy = dy / dist;
+        const startX = cx + ux * (rad + 0.5);
+        const startY = cy + uy * (rad + 0.5);
+        const tipGap = Math.max(3, 4 * Math.min(z, 2));
+        const tipX = tx - ux * tipGap;
+        const tipY = ty - uy * tipGap;
+
+        ctx.strokeStyle = stroke;
+        ctx.fillStyle = stroke;
+        ctx.lineWidth = Math.max(1.2, 1.4 * Math.min(z, 2));
+        ctx.beginPath();
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(tipX, tipY);
+        ctx.stroke();
+        drawArrowHead(tipX, tipY, startX, startY, Math.max(5, rad * 0.55));
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+        ctx.fillStyle = fill;
+        ctx.fill();
+        ctx.lineWidth = active ? 2.5 : 1.6;
+        ctx.strokeStyle = stroke;
+        ctx.stroke();
+
+        ctx.fillStyle = active ? "#fff" : "#b71c1c";
+        ctx.font = `bold ${Math.max(9, 10 * Math.min(z, 1.9))}px Segoe UI, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(b.balloon), cx, cy + 0.5);
+      } else if (active || showHandles) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+        if (active) {
+          ctx.fillStyle = "rgba(61,126,255,0.22)";
+          ctx.fill();
+          ctx.lineWidth = 2.5;
+          ctx.strokeStyle = "#3d7eff";
+        } else if (m === "delete") {
+          ctx.strokeStyle = "rgba(229,57,53,0.55)";
+          ctx.lineWidth = 1.5;
+        } else {
+          ctx.strokeStyle = "rgba(61,126,255,0.35)";
+          ctx.lineWidth = 1.25;
+        }
+        ctx.stroke();
+      }
+
+      if (active && showHandles) {
+        const tip = pdfBoxToImg(b.x, b.y, b.width || 20, b.height || 12);
         ctx.save();
-        ctx.strokeStyle = "#3d7eff";
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = "rgba(61,126,255,0.7)";
+        ctx.lineWidth = 1.25;
         ctx.setLineDash([4, 3]);
-        ctx.strokeRect(pan.x + r.x * z, pan.y + r.y * z, Math.max(4, r.w * z), Math.max(4, r.h * z));
+        ctx.strokeRect(
+          pan.x + tip.x * z,
+          pan.y + tip.y * z,
+          Math.max(4, tip.w * z),
+          Math.max(4, tip.h * z),
+        );
         ctx.restore();
       }
     }
@@ -251,9 +441,8 @@ export default function BalloonCanvas({
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, balloons, selected, liveBox, mode, imageUrl, zoomPct]);
+  }, [ready, balloons, selected, liveBox, mode, imageUrl, zoomPct, pageGeometry]);
 
-  // Non-passive wheel so we can prevent browser/page zoom
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
@@ -270,18 +459,22 @@ export default function BalloonCanvas({
   }, [ready, imageUrl]);
 
   const hitBalloon = (ix: number, iy: number) => {
+    const z = zoomRef.current;
+    // Constant ~22px screen hit radius → image-space radius
+    const hitRImg = 22 / Math.max(z, 0.25);
     let best: Balloon | null = null;
     let bestD = Infinity;
     for (const b of balloonsRef.current) {
-      const r = pdfToImgPx(b.x, b.y, b.width || 20, b.height || 12);
-      const cx = r.x + r.w / 2;
-      const cy = r.y + r.h / 2;
-      const hitR = Math.max(14, Math.hypot(r.w, r.h) * 0.35) / Math.max(zoomRef.current, 0.5);
-      const d = Math.hypot(cx - ix, cy - iy);
-      // also hit inside dim rect
-      const inside =
-        ix >= r.x - 4 && iy >= r.y - 4 && ix <= r.x + r.w + 4 && iy <= r.y + r.h + 4;
-      if ((inside || d < hitR * 2) && d < bestD) {
+      const cPdf = balloonCenterPdf(b);
+      const c = pdfPtToImg(cPdf.x, cPdf.y);
+      const d = Math.hypot(c.x - ix, c.y - iy);
+      const tip = pdfBoxToImg(b.x, b.y, b.width || 20, b.height || 12);
+      const insideTip =
+        ix >= tip.x - 6 &&
+        iy >= tip.y - 6 &&
+        ix <= tip.x + tip.w + 6 &&
+        iy <= tip.y + tip.h + 6;
+      if ((d <= hitRImg || insideTip) && d < bestD) {
         bestD = d;
         best = b;
       }
@@ -290,35 +483,31 @@ export default function BalloonCanvas({
   };
 
   const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (busy) return;
+    // Allow pan even while a background save runs; only block create/edit/delete writes
     const pt = clientToImg(e.clientX, e.clientY);
     if (!pt) return;
     canvasRef.current?.setPointerCapture(e.pointerId);
 
-    // Pan: middle button, or Space+left, or Alt+left
-    if (e.button === 1 || spaceRef.current || e.altKey) {
+    const m = modeRef.current;
+    if (shouldPan(e, m, spaceRef.current)) {
       panningRef.current = true;
       panStartRef.current = { x: e.clientX, y: e.clientY, panX: panRef.current.x, panY: panRef.current.y };
       return;
     }
     if (e.button !== 0) return;
+    if (busyRef.current && m !== "edit") return;
 
-    const m = modeRef.current;
     if (m === "create") {
+      if (busyRef.current) return;
       drawingRef.current = true;
       const box = { x0: pt.ix, y0: pt.iy, x1: pt.ix, y1: pt.iy };
       boxRef.current = box;
       setLiveBox(box);
       return;
     }
-    if (m === "view") {
-      panningRef.current = true;
-      panStartRef.current = { x: e.clientX, y: e.clientY, panX: panRef.current.x, panY: panRef.current.y };
-      return;
-    }
-
     const hit = hitBalloon(pt.ix, pt.iy);
     if (m === "delete") {
+      if (busyRef.current) return;
       if (hit) onDelete(hit.balloon);
       return;
     }
@@ -327,9 +516,20 @@ export default function BalloonCanvas({
         onSelect(hit.balloon);
         dragNoRef.current = hit.balloon;
         movedRef.current = false;
+        const cPdf = balloonCenterPdf(hit);
+        dragOriginRef.current = {
+          ix: pt.ix,
+          iy: pt.iy,
+          bx: cPdf.x,
+          by: cPdf.y,
+          x: hit.x,
+          y: hit.y,
+        };
+        onMoveStart?.();
       } else {
         onSelect(null);
         dragNoRef.current = null;
+        dragOriginRef.current = null;
         panningRef.current = true;
         panStartRef.current = { x: e.clientX, y: e.clientY, panX: panRef.current.x, panY: panRef.current.y };
       }
@@ -344,7 +544,6 @@ export default function BalloonCanvas({
       redraw();
       return;
     }
-    if (busy) return;
     const pt = clientToImg(e.clientX, e.clientY);
     if (!pt) return;
 
@@ -355,12 +554,22 @@ export default function BalloonCanvas({
       return;
     }
 
-    if (modeRef.current === "edit" && dragNoRef.current != null && (e.buttons & 1) === 1) {
-      const b = balloonsRef.current.find((x) => x.balloon === dragNoRef.current);
-      if (!b) return;
-      const pdf = imgPxToPdf(pt.ix, pt.iy);
+    if (modeRef.current === "edit" && dragNoRef.current != null && dragOriginRef.current && (e.buttons & 1) === 1) {
+      const origin = dragOriginRef.current;
+      const p0 = imgPxToPdf(origin.ix, origin.iy);
+      const p1 = imgPxToPdf(pt.ix, pt.iy);
+      const ddx = p1.x - p0.x;
+      const ddy = p1.y - p0.y;
       movedRef.current = true;
-      onMove(dragNoRef.current, pdf.x - (b.width || 20) / 2, pdf.y - (b.height || 12) / 2);
+      const patch = {
+        bx: origin.bx + ddx,
+        by: origin.by + ddy,
+        x: origin.x + ddx,
+        y: origin.y + ddy,
+      };
+      dragLiveRef.current = { no: dragNoRef.current, ...patch };
+      redraw();
+      onMove(dragNoRef.current, patch);
     }
   };
 
@@ -407,9 +616,13 @@ export default function BalloonCanvas({
     if (modeRef.current === "edit" && movedRef.current) {
       movedRef.current = false;
       dragNoRef.current = null;
+      dragOriginRef.current = null;
+      dragLiveRef.current = null;
       onMoveEnd();
     } else {
       dragNoRef.current = null;
+      dragOriginRef.current = null;
+      dragLiveRef.current = null;
     }
   };
 
@@ -419,6 +632,8 @@ export default function BalloonCanvas({
       : panningRef.current || mode === "view"
         ? "grab"
         : "pointer";
+
+  const hasImage = !!imgRef.current;
 
   return (
     <div className="viewer-shell">
@@ -436,14 +651,15 @@ export default function BalloonCanvas({
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => setZoomAround(1)}>
           100%
         </button>
+        {savingHint ? <span className="muted viewer-hint">Saving…</span> : null}
         <span className="muted viewer-hint">
-          Wheel = zoom · Drag / Space+drag = pan · Create = draw box
+          Wheel = zoom · Drag / Shift+drag / right-drag = pan · Edit = drag balloon circle
         </span>
       </div>
       <div ref={wrapRef} className={`panel-body canvas-wrap viewer-body ${mode === "create" ? "drawing" : ""}`}>
-        {loading || (!imgRef.current && ready === 0 && !failed) ? (
+        {!hasImage && (loading || ready === 0) && !failed ? (
           <div className="placeholder">Loading preview…</div>
-        ) : !imgRef.current || failed ? (
+        ) : !hasImage || failed ? (
           <div className="placeholder">Preview unavailable.</div>
         ) : (
           <canvas
@@ -454,6 +670,7 @@ export default function BalloonCanvas({
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
+            onContextMenu={(e) => e.preventDefault()}
           />
         )}
       </div>

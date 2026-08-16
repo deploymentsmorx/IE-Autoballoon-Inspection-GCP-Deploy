@@ -14,8 +14,20 @@ type AuthCtx = {
 
 const Ctx = createContext<AuthCtx | null>(null);
 
-/** Clear saved inspection job (drawings / balloons) from this browser. */
+/** Clear saved inspection job (drawings / balloons / report) from this device. */
 export function clearJobSession() {
+  localStorage.removeItem("smorx_job");
+  sessionStorage.removeItem("smorx_job");
+}
+
+/** Current-session job only (cleared when EXE / browser is closed). */
+export function getJobSession(): string | null {
+  return sessionStorage.getItem("smorx_job") || null;
+}
+
+export function setJobSession(jobId: string) {
+  sessionStorage.setItem("smorx_job", jobId);
+  // Do not keep across app reopen
   localStorage.removeItem("smorx_job");
 }
 
@@ -35,6 +47,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
+    // Drop any leftover job from a previous EXE / browser run (old localStorage).
+    localStorage.removeItem("smorx_job");
     let cancelled = false;
     (async () => {
       if (!token) {
@@ -42,7 +56,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
       try {
-        await refresh();
+        // Cap wait so EXE does not sit on "Loading…" if API is down
+        await Promise.race([
+          refresh(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("API timeout")), 9000),
+          ),
+        ]);
       } catch {
         if (!cancelled) {
           clearJobSession();

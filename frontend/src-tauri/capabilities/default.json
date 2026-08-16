@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for AutoBalloon",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-get-device-info",
+    "allow-save-download"
+  ]
+}

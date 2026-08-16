@@ -1,7 +1,9 @@
-import { FormEvent, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { api } from "../api";
+import { isDesktopApp, isLicenseActivated } from "../device";
+import { APP_TITLE } from "../constants/branding";
 
 export default function LoginPage() {
   const { user, ready, login } = useAuth();
@@ -11,8 +13,17 @@ export default function LoginPage() {
   const [show, setShow] = useState(false);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [desktop, setDesktop] = useState(false);
+  const [checked, setChecked] = useState(false);
 
-  if (!ready) {
+  useEffect(() => {
+    isDesktopApp().then((v) => {
+      setDesktop(v);
+      setChecked(true);
+    });
+  }, []);
+
+  if (!ready || !checked) {
     return (
       <div className="page-center">
         <div className="muted">Loading…</div>
@@ -20,7 +31,12 @@ export default function LoginPage() {
     );
   }
 
+  if (desktop && !isLicenseActivated()) {
+    return <Navigate to="/activate" replace />;
+  }
+
   if (user) {
+    if (user.must_change_password) return <Navigate to="/change-password" replace />;
     return <Navigate to={user.role === "super_admin" ? "/admin" : "/app"} replace />;
   }
 
@@ -31,6 +47,10 @@ export default function LoginPage() {
     try {
       await login(username, password);
       const me = await api.me();
+      if (me.must_change_password) {
+        nav("/change-password");
+        return;
+      }
       nav(me.role === "super_admin" ? "/admin" : "/app");
     } catch (ex: any) {
       setErr(ex.message || "Login failed");
@@ -45,7 +65,7 @@ export default function LoginPage() {
         <div className="logo-box">
           <img src="/smorx-logo-full.png" alt="SmorX.ai" />
         </div>
-        <h1>Inspection Report</h1>
+        <h1>{APP_TITLE}</h1>
         <p className="muted">Sign in with the email and password provided by your administrator.</p>
         <form onSubmit={onSubmit}>
           <div className="field">
@@ -73,6 +93,15 @@ export default function LoginPage() {
         </form>
         <p className="muted mt" style={{ fontSize: "0.8rem" }}>
           Your super admin must grant access before you can use the app.
+          {desktop && (
+            <>
+              {" "}
+              Need first-time setup?{" "}
+              <a href="#/activate" style={{ color: "var(--blue)" }}>
+                Activate license
+              </a>
+            </>
+          )}
         </p>
       </div>
     </div>

@@ -1,0 +1,29 @@
+# Build AutoBalloon.exe (Windows)
+# Requires: Rust, Node, VS Build Tools (C++), WebView2 Runtime
+
+$ErrorActionPreference = "Stop"
+$Root = Split-Path -Parent $PSScriptRoot
+
+$cargoBin = "$env:USERPROFILE\.cargo\bin"
+$vs = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+$msvcRoot = "$vs\VC\Tools\MSVC\14.44.35207"
+$sdkRoot = "C:\Program Files (x86)\Windows Kits\10"
+$sdk = "10.0.26100.0"
+
+if (-not (Test-Path "$msvcRoot\bin\Hostx64\x64\link.exe")) {
+  Write-Error "MSVC link.exe not found. Install VS Build Tools with Desktop C++ workload."
+}
+
+$env:Path = "$cargoBin;$msvcRoot\bin\Hostx64\x64;$sdkRoot\bin\$sdk\x64;" + $env:Path
+$env:LIB = "$msvcRoot\lib\x64;$sdkRoot\Lib\$sdk\um\x64;$sdkRoot\Lib\$sdk\ucrt\x64"
+$env:INCLUDE = "$msvcRoot\include;$sdkRoot\Include\$sdk\ucrt;$sdkRoot\Include\$sdk\um;$sdkRoot\Include\$sdk\shared;$sdkRoot\Include\$sdk\winrt"
+$env:CARGO_TARGET_DIR = Join-Path $Root "src-tauri\target"
+
+Set-Location $Root
+npx tauri build --no-bundle
+
+$exe = Join-Path $env:CARGO_TARGET_DIR "release\autoballoon.exe"
+$outDir = Join-Path $Root "dist-desktop"
+New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+Copy-Item $exe (Join-Path $outDir "AutoBalloon.exe") -Force
+Write-Host "Built: $(Join-Path $outDir 'AutoBalloon.exe')"

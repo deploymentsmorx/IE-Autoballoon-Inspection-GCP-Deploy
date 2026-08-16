@@ -14,9 +14,31 @@
         "write": true,
         "delete": true
       }
+    },
+    {
+      "id": "u-mordhwaj",
+      "username": "mordhwaj",
+      "email": "mordhwaj@smorx.ai",
+      "full_name": "Mordhwaj",
+      "password_hash": "sha256$bc7152709f42fd96$04e10e521feec710d926dba38343dc8b9140abb68c8a19b2895b8b727a453f3b",
+      "role": "engineer",
+      "org_id": "org-smorx",
+      "active": true,
+      "permissions": {
+        "read": true,
+        "write": true,
+        "delete": true
+      },
+      "must_change_password": false
     }
   ],
-  "organizations": [],
+  "organizations": [
+    {
+      "id": "org-smorx",
+      "name": "SmorX",
+      "created_at": "2026-08-13T12:45:00+00:00"
+    }
+  ],
   "sessions": {},
-  "updated_at": "2026-08-05T04:56:24+00:00"
+  "updated_at": "2026-08-13T13:17:00+00:00"
 }

@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-get-device-info"
+description = "Allow reading the stable Windows device id for license binding"
+commands.allow = ["get_device_info"]
+
+[[permission]]
+identifier = "allow-save-download"
+description = "Allow saving downloaded PDFs/Excel into the user's Downloads folder"
+commands.allow = ["save_download", "download_url", "download_post"]
+
+[[permission]]
+identifier = "deny-get-device-info"
+description = "Deny reading the device id"
+commands.deny = ["get_device_info"]

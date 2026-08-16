@@ -9,24 +9,63 @@ import {
   type MissingDim,
   type ReportRow,
 } from "../api";
-import { useAuth } from "../auth";
+import { getJobSession, setJobSession, useAuth } from "../auth";
 import BalloonCanvas, { type Mode } from "../components/BalloonCanvas";
 import ZoomImageViewer from "../components/ZoomImageViewer";
+import {
+  INSTRUMENT_OPTIONS,
+  addInstrumentId,
+  allInstrumentIds,
+  defaultUnitForInstrument,
+  instrumentIdOptions,
+  renameInstrumentId,
+  unitOptionsForInstrument,
+} from "../constants/instruments";
+import { APP_TITLE } from "../constants/branding";
 
 export default function InspectionPage() {
   const { user, logout, clearJob } = useAuth();
-  const [jobId, setJobId] = useState<string | null>(localStorage.getItem("smorx_job"));
+  // Session-only: closing EXE / browser clears previous drawing + report
+  const [jobId, setJobId] = useState<string | null>(() => getJobSession());
   const [job, setJob] = useState<Job | null>(null);
   const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [ballooning, setBallooning] = useState(false);
   const [err, setErr] = useState("");
   const [mode, setMode] = useState<Mode>("view");
   const [selected, setSelected] = useState<number | null>(null);
-  const [tick, setTick] = useState(0);
+  const [previewRev, setPreviewRev] = useState(0);
+  const [undoCount, setUndoCount] = useState(0);
   const [showReport, setShowReport] = useState(false);
   const [missing, setMissing] = useState<MissingDim[]>([]);
   const [auditMsg, setAuditMsg] = useState("");
   const [viewPage, setViewPage] = useState(0); // 0-based page in multi-page PDF
+  /** After ballooning, hide input panel so output can use full width for edit/zoom. */
+  const [showInput, setShowInput] = useState(true);
   const balloonsRef = useRef<Balloon[]>([]);
+  const undoStackRef = useRef<Balloon[][]>([]);
+  const moveUndoPushedRef = useRef(false);
+  const undoHandlerRef = useRef<() => void>(() => {});
+
+  const pushUndo = () => {
+    const snap = balloonsRef.current.map((b) => ({ ...b }));
+    undoStackRef.current = [...undoStackRef.current.slice(-24), snap];
+    setUndoCount(undoStackRef.current.length);
+  };
+
+  const bumpPreview = () => setPreviewRev((r) => r + 1);
+
+  const refresh = async (id = jobId, opts?: { bumpPreview?: boolean; reportHint?: boolean; page?: number }) => {
+    if (!id) return;
+    const j = await api.getJob(id, opts?.page ?? viewPage);
+    setJob(j);
+    balloonsRef.current = j.balloons || [];
+    if (j.missing_dimensions) setMissing(j.missing_dimensions);
+    if (opts?.bumpPreview) bumpPreview();
+    if (opts?.reportHint && showReport) {
+      setAuditMsg(`Inspection report updated (${(j.report_rows || []).length} rows).`);
+    }
+  };
 
   const resetLocalJob = () => {
     clearJob();
@@ -39,20 +78,26 @@ export default function InspectionPage() {
     setMode("view");
     setErr("");
     setViewPage(0);
-    setTick((t) => t + 1);
-  };
-  const refresh = async (id = jobId) => {
-    if (!id) return;
-    const j = await api.getJob(id);
-    setJob(j);
-    balloonsRef.current = j.balloons || [];
-    if (j.missing_dimensions) setMissing(j.missing_dimensions);
-    setTick((t) => t + 1);
+    setPreviewRev(0);
+    setShowInput(true);
+    undoStackRef.current = [];
+    setUndoCount(0);
   };
 
   useEffect(() => {
     if (jobId) refresh(jobId).catch((e) => setErr(e.message));
   }, [jobId]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undoHandlerRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   if (!user) return <Navigate to="/login" replace />;
 
@@ -61,51 +106,65 @@ export default function InspectionPage() {
   const pageCount = Math.max(1, Number(job?.page_count) || 1);
   const pageBalloons = balloons.filter((b) => (b.page || 1) === viewPage + 1);
   const hasBalloonOutput = job?.status === "ballooned" || balloons.length > 0;
-  const canvasUrl =
-    jobId && hasBalloonOutput ? api.previewBalloonUrl(jobId, viewPage) : "";
-  const inputUrl = jobId ? api.previewInputUrl(jobId, viewPage) : "";
+  const focusOutput = hasBalloonOutput && !showInput;
+  const inputUrl = jobId ? api.previewInputUrl(jobId, viewPage, previewRev) : "";
 
   const changePage = (next: number) => {
     const p = Math.max(0, Math.min(pageCount - 1, next));
     setViewPage(p);
     setSelected(null);
-    setTick((t) => t + 1);
+    if (jobId) refresh(jobId, { page: p }).catch((e) => setErr(e.message));
   };
   const onUpload = async (files: FileList | null) => {
     if (!files?.length) return;
-    setBusy(true);
+    setUploading(true);
     setErr("");
+    setAuditMsg("Uploading drawing…");
+    // New drawing → wipe previous balloons / report / audit UI first
+    clearJob();
+    setJobId(null);
+    setJob(null);
+    balloonsRef.current = [];
+    setMissing([]);
+    setShowReport(false);
+    setSelected(null);
+    setMode("view");
+    setViewPage(0);
+    setPreviewRev(0);
+    setShowInput(true);
+    undoStackRef.current = [];
+    setUndoCount(0);
     try {
       const res = await api.uploadPdfs(files);
-      localStorage.setItem("smorx_job", res.job_id);
+      setJobSession(res.job_id);
       setJobId(res.job_id);
-      setViewPage(0);
-      setMode("view");
-      setSelected(null);
-      setShowReport(false);
-      await refresh(res.job_id);
+      await refresh(res.job_id, { bumpPreview: true });
+      setAuditMsg("Upload done. Click “Run auto ballooning” to process the drawing.");
     } catch (e: any) {
       setErr(e.message);
+      setAuditMsg("");
     } finally {
-      setBusy(false);
+      setUploading(false);
     }
   };
 
   const onBalloon = async () => {
     if (!jobId) return;
     setBusy(true);
+    setBallooning(true);
     setErr("");
-    setAuditMsg("Auto ballooning running — large drawings can take 1–3 minutes. Please wait…");
+    setAuditMsg("Auto ballooning running — usually 1–3 minutes on large drawings…");
     try {
       const res = await api.runBalloon(jobId, 0);
-      await refresh(jobId);
-      setMode("view");
-      setTick((t) => t + 1);
-      setAuditMsg(`Ballooning done: ${res.count} balloons${res.page_count && res.page_count > 1 ? ` across ${res.page_count} pages` : ""}.`);
+      await refresh(jobId, { bumpPreview: true, reportHint: showReport });
+      setMode("edit");
+      setShowInput(false);
+      setAuditMsg(`Ballooning done: ${res.count} balloons${res.page_count && res.page_count > 1 ? ` across ${res.page_count} pages` : ""}. Use full-width output to edit — “Show input” brings the original back.`);
     } catch (e: any) {
       setErr(e.message || "Auto ballooning failed — try again");
       setAuditMsg("");
     } finally {
+      setBallooning(false);
       setBusy(false);
     }
   };
@@ -121,7 +180,7 @@ export default function InspectionPage() {
     try {
       const res = await api.auditCrosscheck(jobId, 0);
       setMissing(res.missing || []);
-      await refresh(jobId);
+      await refresh(jobId, { bumpPreview: true, reportHint: showReport });
       setAuditMsg(
         `Audit done: +${res.added} recovered · ${res.count} total balloons · ${res.missing_count} still missing`,
       );
@@ -141,7 +200,7 @@ export default function InspectionPage() {
     try {
       const res = await api.addMissingDims(jobId, [item]);
       setMissing(res.missing || []);
-      await refresh(jobId);
+      await refresh(jobId, { bumpPreview: true, reportHint: showReport });
       setAuditMsg(`Added “${item.text}”. ${res.missing_count} missing left.`);
     } catch (e: any) {
       setErr(e.message);
@@ -158,7 +217,7 @@ export default function InspectionPage() {
     try {
       const res = await api.addMissingDims(jobId, missing);
       setMissing(res.missing || []);
-      await refresh(jobId);
+      await refresh(jobId, { bumpPreview: true, reportHint: showReport });
       setAuditMsg(`Added missing dimensions. ${res.count} balloons total.`);
     } catch (e: any) {
       setErr(e.message);
@@ -167,12 +226,15 @@ export default function InspectionPage() {
     }
   };
 
-  const download = async (kind: "ballooned" | "report" | "excel" | "source") => {
+  const download = async (kind: "ballooned" | "report" | "excel" | "source"): Promise<string> => {
     if (!jobId) {
-      setErr("No job loaded — upload a drawing first.");
-      return;
+      const msg = "No job loaded — upload a drawing first.";
+      setErr(msg);
+      throw new Error(msg);
     }
     setErr("");
+    setBusy(true);
+    setAuditMsg("Downloading…");
     try {
       if (kind === "report" && (!job?.report_rows || job.report_rows.length === 0)) {
         if (job?.balloons?.length) {
@@ -182,27 +244,44 @@ export default function InspectionPage() {
       }
       const url =
         kind === "ballooned"
-          ? `${api.apiBase}/api/jobs/${jobId}/download/ballooned`
+          ? api.downloadBallooned(jobId)
           : kind === "source"
             ? api.downloadSourceUrl(jobId)
             : kind === "report"
               ? api.downloadReportPdf(jobId)
               : api.downloadExcel(jobId);
-      const blob = await api.authFetch(url);
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download =
+      const srcName = job?.files?.[0]?.name || "";
+      const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
+      const filename =
         kind === "ballooned"
-          ? `${jobId}_ballooned.pdf`
+          ? `${stem}_ballooned.pdf`
           : kind === "source"
-            ? `${jobId}_input.pdf`
+            ? srcName || `${jobId}_input.pdf`
             : kind === "report"
-              ? `${jobId}_inspection_report.pdf`
-              : `${jobId}_inspection_report.xlsx`;
-      a.click();
-      URL.revokeObjectURL(a.href);
+              ? `${stem}_inspection_report.pdf`
+              : `${stem}_inspection_report.xlsx`;
+      const savedPath = await api.downloadFile(url, filename);
+      const label =
+        kind === "ballooned"
+          ? "Ballooned PDF"
+          : kind === "source"
+            ? "Input file"
+            : kind === "report"
+              ? "Inspection report PDF"
+              : "Excel report";
+      setAuditMsg(
+        savedPath.includes("\\") || savedPath.includes("/")
+          ? `${label} saved to: ${savedPath}`
+          : `${label} downloaded — check your Downloads folder.`,
+      );
+      return savedPath;
     } catch (e: any) {
-      setErr(e.message || "Download failed");
+      setAuditMsg("");
+      const msg = e.message || "Download failed";
+      setErr(msg);
+      throw e;
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -257,24 +336,22 @@ export default function InspectionPage() {
 
   const onCreateBox = async (box: { x: number; y: number; width: number; height: number }) => {
     if (!jobId) return;
-    const raw = window.prompt("Dimension text for new balloon", "AutoBallon");
-    if (raw === null) return; // Cancel
-    // "AutoBallon" is a placeholder only — do not put it on the drawing / report nominal
-    const trimmed = raw.trim();
-    const text =
-      !trimmed || /^auto\s*ballon$/i.test(trimmed) || /^auto\s*balloon$/i.test(trimmed)
-        ? ""
-        : trimmed;
+    const nextNo =
+      Math.max(0, ...(balloonsRef.current.map((b) => Number(b.balloon) || 0))) + 1;
+    // No prompt — server places leader/circle with the same balloon rules as auto-balloon
     setBusy(true);
     setErr("");
     try {
+      pushUndo();
       await api.createBalloon(jobId, {
         page: viewPage + 1,
-        text,
+        text: "",
         ...box,
       });
-      await refresh(jobId);
-      setMode("view");
+      await refresh(jobId, { bumpPreview: true, reportHint: showReport });
+      setMode("edit");
+      setSelected(nextNo);
+      setAuditMsg(`Balloon #${nextNo} created and placed — inspection report updated.`);
     } catch (ex: any) {
       setErr(ex.message);
     } finally {
@@ -282,26 +359,38 @@ export default function InspectionPage() {
     }
   };
 
-  const onMoveBalloon = (no: number, x: number, y: number) => {
+  const onMoveBalloon = (no: number, patch: Partial<Balloon>) => {
     setJob((j) => {
       if (!j) return j;
-      const next = j.balloons.map((b) => (b.balloon === no ? { ...b, x, y } : b));
+      const next = j.balloons.map((b) => (b.balloon === no ? { ...b, ...patch } : b));
       balloonsRef.current = next;
       return { ...j, balloons: next };
     });
   };
 
+  const onMoveStart = () => {
+    if (!moveUndoPushedRef.current) {
+      pushUndo();
+      moveUndoPushedRef.current = true;
+    }
+  };
+
   const onMoveEnd = async () => {
     if (!jobId) return;
-    setBusy(true);
+    moveUndoPushedRef.current = false;
+    // Quiet save — do not freeze the canvas with global busy
     setErr("");
     try {
-      await api.saveBalloons(jobId, balloonsRef.current);
-      await refresh(jobId);
+      const res = await api.saveBalloons(jobId, balloonsRef.current);
+      if (res?.balloons?.length) {
+        balloonsRef.current = res.balloons;
+        setJob((j) => (j ? { ...j, balloons: res.balloons } : j));
+      }
+      // Refresh preview without blanking UI (useAuthImage keeps last frame)
+      bumpPreview();
+      await refresh(jobId, { bumpPreview: false, reportHint: false });
     } catch (ex: any) {
       setErr(ex.message);
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -311,10 +400,12 @@ export default function InspectionPage() {
     setBusy(true);
     setErr("");
     try {
+      pushUndo();
       await api.deleteBalloon(jobId, balloonNo);
       setSelected(null);
-      await refresh(jobId);
-      setMode("view");
+      await refresh(jobId, { bumpPreview: true, reportHint: showReport });
+      setMode("edit");
+      setAuditMsg("Balloon deleted — inspection report updated.");
     } catch (ex: any) {
       setErr(ex.message);
     } finally {
@@ -326,15 +417,41 @@ export default function InspectionPage() {
     if (!jobId) return;
     setBusy(true);
     try {
+      pushUndo();
       await api.saveBalloons(jobId, balloonsRef.current);
-      await refresh(jobId);
+      await refresh(jobId, { bumpPreview: true, reportHint: showReport });
       setMode("view");
       setSelected(null);
+      setAuditMsg("Balloons saved — inspection report updated.");
     } catch (e: any) {
       setErr(e.message);
     } finally {
       setBusy(false);
     }
+  };
+
+  const doUndo = async () => {
+    if (!jobId || busy || undoStackRef.current.length === 0) return;
+    const prev = undoStackRef.current.pop();
+    if (!prev) return;
+    setUndoCount(undoStackRef.current.length);
+    setBusy(true);
+    setErr("");
+    try {
+      await api.saveBalloons(jobId, prev);
+      await refresh(jobId, { bumpPreview: true, reportHint: showReport });
+      setMode("view");
+      setSelected(null);
+      setAuditMsg("Undo — restored previous balloons and report.");
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  undoHandlerRef.current = () => {
+    void doUndo();
   };
 
   return (
@@ -343,7 +460,7 @@ export default function InspectionPage() {
         <div className="brand">
           <img src="/smorx-logo-full.png" alt="SmorX.ai" />
         </div>
-        <div className="title">Inspection Software system</div>
+        <div className="title">{APP_TITLE}</div>
         <div className="actions">
           {user.role === "super_admin" && (
             <Link className="btn btn-ghost btn-sm" to="/admin">
@@ -369,25 +486,35 @@ export default function InspectionPage() {
             type="file"
             accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,image/tiff,image/bmp,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp"
             multiple
-            onChange={(e) => onUpload(e.target.files)}
+            disabled={uploading || busy}
+            onChange={(e) => {
+              void onUpload(e.target.files);
+              e.target.value = "";
+            }}
           />
+          {uploading && <span className="muted" style={{ display: "block", marginTop: 6 }}>Uploading…</span>}
         </div>
-        <button className="btn btn-primary" style={{ width: "auto" }} disabled={busy || !jobId} onClick={onBalloon}>
-          {busy ? "Working…" : "Run auto ballooning"}
+        <button
+          className="btn btn-primary"
+          style={{ width: "auto" }}
+          disabled={busy || uploading || !jobId}
+          onClick={onBalloon}
+        >
+          {busy ? (ballooning ? "Ballooning…" : "Please wait…") : "Run auto ballooning"}
         </button>
         <button
           className="btn btn-outline"
           style={{ width: "auto" }}
-          disabled={busy || !jobId || !hasBalloonOutput}
+          disabled={busy || uploading || !jobId || !hasBalloonOutput}
           onClick={() => void onAudit()}
           title="Recover missed dims and list anything still missing"
         >
           Audit / Cross-check
         </button>
-        <button className="btn btn-ghost" disabled={busy} onClick={resetLocalJob}>
+        <button className="btn btn-ghost" disabled={busy || uploading} onClick={resetLocalJob}>
           New drawing
         </button>
-        <button className="btn btn-ghost" disabled={!jobId} onClick={() => download("excel")}>
+        <button className="btn btn-ghost" disabled={!jobId || uploading || busy} onClick={() => download("excel")}>
           Download Excel
         </button>
       </div>
@@ -435,7 +562,8 @@ export default function InspectionPage() {
         </div>
       )}
 
-      <div className="panels">
+      <div className={`panels ${focusOutput ? "panels-focus" : ""}`}>
+        {(showInput || !hasBalloonOutput) && (
         <div className="panel">
           <div className="panel-head">
             <h3>1 · Input file{pageCount > 1 ? ` · page ${viewPage + 1}/${pageCount}` : ""}</h3>
@@ -468,22 +596,33 @@ export default function InspectionPage() {
             </div>
           </div>
           {jobId ? (
-            <ZoomImageViewer key={`in-${tick}-p${viewPage}`} imageUrl={inputUrl} />
+            <ZoomImageViewer key={`in-p${viewPage}`} imageUrl={inputUrl} />
           ) : (
             <div className="panel-body">
               <div className="placeholder">No file yet.</div>
             </div>
           )}
         </div>
+        )}
 
-        <div className="panel">
+        <div className={`panel ${focusOutput ? "panel-focus" : ""}`}>
           <div className="panel-head">
             <h3>
-              2 · Auto Ballooning
+              {focusOutput ? "Auto Ballooning" : "2 · Auto Ballooning"}
               {pageCount > 1 ? ` · page ${viewPage + 1}/${pageCount}` : ""}
               {hasBalloonOutput ? ` · ${pageBalloons.length} on page` : ""}
             </h3>
             <div className="row">
+              {hasBalloonOutput && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setShowInput((v) => !v)}
+                  title={showInput ? "Hide input drawing — more room to edit balloons" : "Show original input drawing beside output"}
+                >
+                  {showInput ? "Hide input" : "Show input"}
+                </button>
+              )}
               {pageCount > 1 && (
                 <>
                   <button
@@ -502,6 +641,16 @@ export default function InspectionPage() {
                   </button>
                 </>
               )}
+              <ModeBtn
+                active={mode === "view"}
+                disabled={!hasBalloonOutput || busy}
+                onClick={() => {
+                  setMode("view");
+                  setSelected(null);
+                  setErr("");
+                }}
+                label="Pan"
+              />
               <ModeBtn
                 active={mode === "create"}
                 disabled={!hasBalloonOutput || busy}
@@ -531,26 +680,41 @@ export default function InspectionPage() {
                 }}
                 label="Delete"
               />
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={busy || !hasBalloonOutput || undoCount === 0}
+                onClick={() => void doUndo()}
+                title="Undo last balloon change (Ctrl+Z)"
+              >
+                Undo
+              </button>
               <button className="btn btn-primary btn-sm" style={{ width: "auto" }} onClick={saveEdits} disabled={busy || !hasBalloonOutput}>
                 Save
               </button>
-              <button className="btn btn-ghost btn-sm" disabled={!hasBalloonOutput} onClick={() => download("ballooned")}>
-                Download
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={busy || !hasBalloonOutput}
+                onClick={() => void download("ballooned")}
+              >
+                {busy ? "Downloading…" : "Download"}
               </button>
             </div>
           </div>
 
           {jobId && hasBalloonOutput ? (
             <BalloonCanvas
-              key={`cv-${tick}-p${viewPage}`}
-              imageUrl={canvasUrl}
+              key={`cv-p${viewPage}`}
+              imageUrl={inputUrl}
               balloons={pageBalloons}
               mode={mode}
               selected={selected}
               busy={busy}
+              liveDraw
+              pageGeometry={job?.page_geometry}
               onSelect={setSelected}
               onCreate={onCreateBox}
               onMove={onMoveBalloon}
+              onMoveStart={onMoveStart}
               onMoveEnd={onMoveEnd}
               onDelete={(n) => void doDelete(n)}
             />
@@ -600,9 +764,6 @@ export default function InspectionPage() {
           onSaved={async () => {
             await refresh(jobId);
           }}
-          onDownloadPdf={async () => {
-            await download("report");
-          }}
           onError={(msg) => setErr(msg)}
         />
       )}
@@ -634,18 +795,29 @@ function ModeBtn({
   );
 }
 
+function defaultMeasureCols(): MeasureCol[] {
+  return [
+    { id: "m1", label: "M1", values: {} },
+    { id: "m2", label: "M2", values: {} },
+  ];
+}
+
+function nowReportDate() {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function ReportPanel({
   job,
   jobId,
   onSaved,
-  onDownloadPdf,
   onClose,
   onError,
 }: {
   job: Job;
   jobId: string;
   onSaved: () => Promise<void>;
-  onDownloadPdf: () => Promise<void> | void;
   onClose: () => void;
   onError: (msg: string) => void;
 }) {
@@ -655,6 +827,12 @@ function ReportPanel({
   const [material, setMaterial] = useState(job.material || "");
   const [mass, setMass] = useState(job.mass || "");
   const [finish, setFinish] = useState(job.finish || "");
+  const [serialNumber, setSerialNumber] = useState(job.serial_number || "");
+  const [reportDate, setReportDate] = useState(job.report_date || nowReportDate());
+  const [companyName, setCompanyName] = useState(job.company_name || "");
+  const [supplierName, setSupplierName] = useState(job.supplier_name || "");
+  const [customerName, setCustomerName] = useState(job.customer_name || "");
+  const [authorizedSignatory, setAuthorizedSignatory] = useState(job.authorized_signatory || "");
   const [rows, setRows] = useState<ReportRow[]>(() =>
     (job.report_rows || []).length
       ? job.report_rows || []
@@ -668,11 +846,14 @@ function ReportPanel({
           instrument: "",
           unit: "mm",
           instr_id: "",
-          measured: ["", "", ""],
+          measured: ["", ""],
           remarks: "",
         })),
   );
-  const [cols, setCols] = useState<MeasureCol[]>(job.measure_columns || []);
+  const [cols, setCols] = useState<MeasureCol[]>(() =>
+    job.measure_columns?.length ? job.measure_columns : defaultMeasureCols(),
+  );
+  const [idRev, setIdRev] = useState(0);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [page, setPage] = useState(0);
@@ -692,17 +873,23 @@ function ReportPanel({
             instrument: "",
             unit: "mm",
             instr_id: "",
-            measured: ["", "", ""],
+            measured: ["", ""],
             remarks: "",
           }));
     setRows(nextRows);
-    setCols(job.measure_columns || []);
+    setCols(job.measure_columns?.length ? job.measure_columns : defaultMeasureCols());
     setPartNumber(job.part_number || "");
     setPartName(job.part_name || "");
     setRevision(job.revision || "");
     setMaterial(job.material || "");
     setMass(job.mass || "");
     setFinish(job.finish || "");
+    setSerialNumber(job.serial_number || "");
+    setReportDate(job.report_date || nowReportDate());
+    setCompanyName(job.company_name || "");
+    setSupplierName(job.supplier_name || "");
+    setCustomerName(job.customer_name || "");
+    setAuthorizedSignatory(job.authorized_signatory || "");
     setPage(0);
   }, [job]);
 
@@ -710,37 +897,112 @@ function ReportPanel({
   const pageRows = rows.slice(page * pageSize, page * pageSize + pageSize);
 
   const addColumn = () => {
-    const id = `m${Date.now()}`;
-    setCols((c) => [...c, { id, label: `Measured ${c.length + 4}`, values: {} }]);
+    setCols((c) => {
+      const n = c.length + 1;
+      return [...c, { id: `m${Date.now()}`, label: `M${n}`, values: {} }];
+    });
   };
 
-  const removeColumn = (id: string) => setCols((c) => c.filter((x) => x.id !== id));
+  const removeColumn = () => {
+    setCols((c) => (c.length <= 2 ? c : c.slice(0, -1)));
+  };
+
+  const renameColumn = (id: string, label: string) => {
+    setCols((cs) => cs.map((col) => (col.id === id ? { ...col, label } : col)));
+  };
+
+  const addInstrId = () => {
+    const instrument =
+      window.prompt(
+        "Instrument type for this ID (e.g. Vernier Caliper)",
+        rows.find((r) => r.instrument)?.instrument || "Vernier Caliper",
+      ) || "";
+    if (!instrument.trim()) return;
+    const id = window.prompt("New instrument ID (e.g. VC-004)", "") || "";
+    if (!id.trim()) return;
+    addInstrumentId(instrument.trim(), id.trim());
+    setIdRev((n) => n + 1);
+    setMsg(`Instrument ID “${id.trim()}” added.`);
+  };
+
+  const editInstrId = () => {
+    const known = Array.from(
+      new Set([...allInstrumentIds(), ...rows.map((r) => r.instr_id).filter(Boolean)]),
+    );
+    const current = rows.find((r) => r.instr_id)?.instr_id || known[0] || "";
+    const oldId = window.prompt(`Instrument ID to rename\nKnown: ${known.slice(0, 12).join(", ")}`, current) || "";
+    if (!oldId.trim()) return;
+    const newId = window.prompt("New name / ID", oldId.trim()) || "";
+    if (!newId.trim() || newId.trim() === oldId.trim()) return;
+    renameInstrumentId(oldId.trim(), newId.trim());
+    setRows((rs) => rs.map((r) => (r.instr_id === oldId.trim() ? { ...r, instr_id: newId.trim() } : r)));
+    setIdRev((n) => n + 1);
+    setMsg(`Instrument ID renamed to “${newId.trim()}”.`);
+  };
+
+  const extractTitle = async () => {
+    setBusy(true);
+    setMsg("");
+    try {
+      const res = await api.extractTitle(jobId);
+      if (res.part_number) setPartNumber(res.part_number);
+      if (res.part_name) setPartName(res.part_name);
+      if (res.revision) setRevision(res.revision);
+      if (res.material) setMaterial(res.material);
+      if (res.mass) setMass(res.mass);
+      if (res.finish) setFinish(res.finish);
+      if (res.serial_number) setSerialNumber(res.serial_number);
+      if (res.report_date) setReportDate(res.report_date);
+      if (res.company_name) setCompanyName(res.company_name);
+      if (res.supplier_name) setSupplierName(res.supplier_name);
+      if (res.customer_name) setCustomerName(res.customer_name);
+      if (res.authorized_signatory) setAuthorizedSignatory(res.authorized_signatory);
+      await onSaved();
+      const filled = Object.entries(res).filter(([, v]) => String(v || "").trim()).length;
+      setMsg(`Title block read from drawing (${filled} fields). Empty report fields were filled.`);
+    } catch (e: any) {
+      onError(e.message || "Title-block extract failed");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const updateRowByBalloon = (balloon: number, patch: Partial<ReportRow>) => {
     setRows((rs) => rs.map((x) => (x.balloon === balloon ? { ...x, ...patch } : x)));
   };
 
+  const setColValue = (colId: string, balloon: number, val: string) => {
+    setCols((cs) =>
+      cs.map((col) =>
+        col.id === colId ? { ...col, values: { ...col.values, [String(balloon)]: val } } : col,
+      ),
+    );
+  };
+
+  const payload = () => ({
+    part_number: partNumber,
+    part_name: partName,
+    revision,
+    material,
+    mass,
+    finish,
+    serial_number: serialNumber,
+    report_date: reportDate,
+    company_name: companyName,
+    supplier_name: supplierName,
+    customer_name: customerName,
+    authorized_signatory: authorizedSignatory,
+    rows,
+    measure_columns: cols,
+  });
+
   const save = async () => {
     setBusy(true);
     setMsg("");
     try {
-      const nextRows = rows.map((r) => {
-        const measured = [...(r.measured || ["", "", ""])];
-        while (measured.length < 3) measured.push("");
-        return { ...r, measured };
-      });
-      await api.saveReport(jobId, {
-        part_number: partNumber,
-        part_name: partName,
-        revision,
-        material,
-        mass,
-        finish,
-        rows: nextRows,
-        measure_columns: cols,
-      });
+      await api.saveReport(jobId, payload());
       await onSaved();
-      setMsg(`Report saved (${nextRows.length} rows).`);
+      setMsg(`Report saved (${rows.length} rows).`);
     } catch (e: any) {
       onError(e.message || "Failed to save report");
     } finally {
@@ -750,58 +1012,43 @@ function ReportPanel({
 
   const downloadPdf = async () => {
     setBusy(true);
-    setMsg("");
+    setMsg("Generating inspection report PDF…");
     try {
-      const nextRows = rows.map((r) => {
-        const measured = [...(r.measured || ["", "", ""])];
-        while (measured.length < 3) measured.push("");
-        return { ...r, measured };
-      });
-      await api.saveReport(jobId, {
-        part_number: partNumber,
-        part_name: partName,
-        revision,
-        material,
-        mass,
-        finish,
-        rows: nextRows,
-        measure_columns: cols,
-      });
-      await onSaved();
-      await onDownloadPdf();
-      setMsg("Inspection report PDF downloaded (NP1213M layout).");
+      const srcName = job.files?.[0]?.name || "";
+      const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
+      const body = payload();
+      const savedPath = await api.downloadReportPdfFile(jobId, body, `${stem}_inspection_report.pdf`);
+      // Keep on-screen edits; POST already saved. Avoid full job reload wiping the table.
+      setMsg(
+        savedPath.includes("\\") || savedPath.includes("/")
+          ? `Inspection report PDF saved to:\n${savedPath}`
+          : "Inspection report PDF saved — check your Downloads folder (not the dist-desktop folder).",
+      );
     } catch (e: any) {
-      onError(e.message || "Report PDF download failed");
+      setMsg("");
+      const detail =
+        typeof e === "string"
+          ? e
+          : e?.message || e?.error || (e != null ? String(e) : "") || "Report PDF download failed";
+      onError(detail);
     } finally {
       setBusy(false);
     }
   };
 
-  const setMeasured = (balloon: number, mi: number, val: string) => {
-    setRows((rs) =>
-      rs.map((r) => {
-        if (r.balloon !== balloon) return r;
-        const measured = [...(r.measured || ["", "", ""])];
-        while (measured.length < 3) measured.push("");
-        measured[mi] = val;
-        return { ...r, measured };
-      }),
-    );
-  };
-
   return (
     <div className="report-modal-backdrop" onClick={onClose}>
-      <div className="report-modal card wide" onClick={(e) => e.stopPropagation()}>
+      <div className="report-modal report-modal-desktop" onClick={(e) => e.stopPropagation()}>
         <div className="row-between mb">
           <div>
             <h2 style={{ margin: 0 }}>Inspection Report</h2>
             <p className="muted" style={{ margin: "4px 0 0" }}>
-              {rows.length} characteristics · same layout as InspectionReport_NP1213M.pdf
+              {APP_TITLE} · {rows.length} characteristics
             </p>
           </div>
           <div className="row">
-            <button className="btn btn-ghost btn-sm" onClick={addColumn}>
-              Add measured column
+            <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void extractTitle()} title="Read title block / drawing labels into empty report fields">
+              Extract from drawing
             </button>
             <button className="btn btn-primary btn-sm" style={{ width: "auto" }} disabled={busy} onClick={() => void save()}>
               Save report data
@@ -820,20 +1067,36 @@ function ReportPanel({
           <div className="error mb">No report rows yet. Run auto ballooning or create balloons first.</div>
         )}
 
-        <div className="row mb">
-          <Field label="Part number" value={partNumber} onChange={setPartNumber} />
-          <Field label="Part name" value={partName} onChange={setPartName} />
-          <Field label="Revision" value={revision} onChange={setRevision} />
-          <Field label="Material" value={material} onChange={setMaterial} />
-          <Field label="Mass" value={mass} onChange={setMass} />
-          <Field label="Finish" value={finish} onChange={setFinish} />
+        <div className="report-title-block mb">
+          <TitleField label="Part Number" value={partNumber} onChange={setPartNumber} />
+          <TitleField label="Part Name" value={partName} onChange={setPartName} wide />
+          <TitleField label="Revision" value={revision} onChange={setRevision} />
+          <TitleField label="Material" value={material} onChange={setMaterial} wide />
+          <TitleField label="Mass" value={mass} onChange={setMass} />
+          <TitleField label="Finish Treatment" value={finish} onChange={setFinish} wide />
+          <TitleField label="Date" value={reportDate} onChange={setReportDate} />
+          <TitleField label="Serial Number" value={serialNumber} onChange={setSerialNumber} wide />
+          <TitleField label="Company Name" value={companyName} onChange={setCompanyName} />
+          <TitleField label="Supplier Name" value={supplierName} onChange={setSupplierName} wide />
+          <TitleField label="Customer Name" value={customerName} onChange={setCustomerName} />
+          <TitleField label="Authorized Signatory" value={authorizedSignatory} onChange={setAuthorizedSignatory} wide />
         </div>
 
         <div className="row-between mb">
-          <p className="muted" style={{ margin: 0 }}>
-            Green = exact · Yellow = in tolerance · Red = out · Click Download report PDF for the full file
-          </p>
-          <div className="row">
+          <div className="row report-col-tools">
+            <div className="report-col-btns" title="Screen only — not printed on PDF">
+              <button type="button" className="btn btn-sm report-col-btn" onClick={addColumn}>
+                + column
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm report-col-btn"
+                onClick={removeColumn}
+                disabled={cols.length <= 2}
+              >
+                − column
+              </button>
+            </div>
             <button className="btn btn-ghost btn-sm" disabled={page <= 0} onClick={() => setPage((p) => p - 1)}>
               Prev
             </button>
@@ -851,7 +1114,7 @@ function ReportPanel({
         </div>
 
         <div className="report-wrap">
-          <table className="table">
+          <table className="table report-table">
             <thead>
               <tr>
                 <th>S.No</th>
@@ -861,79 +1124,123 @@ function ReportPanel({
                 <th>Tol -</th>
                 <th>Tol +</th>
                 <th>Instrument</th>
-                <th>Instr. ID</th>
-                <th>M1</th>
-                <th>M2</th>
-                <th>M3</th>
+                <th>Unit</th>
+                <th className="instr-id-head">
+                  <div className="instr-id-head-inner">
+                    <div className="report-col-btns instr-id-btns">
+                      <button type="button" className="btn btn-sm report-col-btn" onClick={addInstrId} title="Add a new Instr. ID">
+                        + Instr. ID
+                      </button>
+                      <button type="button" className="btn btn-sm report-col-btn" onClick={editInstrId} title="Rename / edit an existing Instr. ID">
+                        Rename Instr. ID
+                      </button>
+                    </div>
+                    <span>Instr. ID</span>
+                  </div>
+                </th>
                 {cols.map((c) => (
                   <th key={c.id}>
-                    {c.label}{" "}
-                    <button className="btn btn-ghost btn-sm" onClick={() => removeColumn(c.id)}>
-                      ×
-                    </button>
+                    <input
+                      className="report-col-name"
+                      value={c.label}
+                      onChange={(e) => renameColumn(c.id, e.target.value)}
+                      title="Edit column name"
+                    />
                   </th>
                 ))}
                 <th>Remarks</th>
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((r) => {
-                const m = r.measured || ["", "", ""];
-                return (
-                  <tr key={r.balloon}>
-                    <td>{r.sno}</td>
-                    <td>{r.balloon}</td>
-                    <td>{r.reference}</td>
-                    <td>{r.nominal}</td>
+              {pageRows.map((r) => (
+                <tr key={r.balloon}>
+                  <td>{r.sno}</td>
+                  <td>{r.balloon}</td>
+                  <td>
+                    <input
+                      value={r.reference}
+                      onChange={(e) => updateRowByBalloon(r.balloon, { reference: e.target.value })}
+                      title="Border grid zone (editable)"
+                    />
+                  </td>
+                  <td>{r.nominal}</td>
+                  <td>
+                    <input value={r.tol_low} onChange={(e) => updateRowByBalloon(r.balloon, { tol_low: e.target.value })} />
+                  </td>
+                  <td>
+                    <input value={r.tol_high} onChange={(e) => updateRowByBalloon(r.balloon, { tol_high: e.target.value })} />
+                  </td>
+                  <td>
+                    <select
+                      className="report-select"
+                      value={r.instrument || ""}
+                        onChange={(e) => {
+                          const instrument = e.target.value;
+                          const ids = instrumentIdOptions(instrument);
+                          const instr_id = ids.includes(r.instr_id) ? r.instr_id : "";
+                          const units = unitOptionsForInstrument(instrument);
+                          const unit = instrument
+                            ? units.includes(r.unit)
+                              ? r.unit
+                              : defaultUnitForInstrument(instrument)
+                            : r.unit || "mm";
+                          updateRowByBalloon(r.balloon, { instrument, instr_id, unit });
+                        }}
+                    >
+                      <option value=""></option>
+                      {INSTRUMENT_OPTIONS.map((name) => (
+                        <option key={name} value={name}>
+                          {name}
+                        </option>
+                      ))}
+                      {r.instrument && !INSTRUMENT_OPTIONS.includes(r.instrument as (typeof INSTRUMENT_OPTIONS)[number]) && (
+                        <option value={r.instrument}>{r.instrument}</option>
+                      )}
+                    </select>
+                  </td>
                     <td>
-                      <input value={r.tol_low} onChange={(e) => updateRowByBalloon(r.balloon, { tol_low: e.target.value })} />
+                      <select
+                        className="report-select"
+                        value={r.unit || ""}
+                        onChange={(e) => updateRowByBalloon(r.balloon, { unit: e.target.value })}
+                      >
+                        <option value=""></option>
+                        {unitOptionsForInstrument(r.instrument, r.unit).map((u) => (
+                          <option key={u} value={u}>
+                            {u}
+                          </option>
+                        ))}
+                      </select>
                     </td>
-                    <td>
-                      <input value={r.tol_high} onChange={(e) => updateRowByBalloon(r.balloon, { tol_high: e.target.value })} />
-                    </td>
-                    <td>
-                      <input
-                        value={r.instrument}
-                        onChange={(e) => updateRowByBalloon(r.balloon, { instrument: e.target.value })}
-                      />
-                    </td>
-                    <td>
-                      <input value={r.instr_id} onChange={(e) => updateRowByBalloon(r.balloon, { instr_id: e.target.value })} />
-                    </td>
-                    {[0, 1, 2].map((mi) => {
-                      const st = measureStatus(r.nominal, r.tol_low, r.tol_high, m[mi] || "");
-                      return (
-                        <td key={mi} className={st !== "empty" ? `cell-${st}` : undefined}>
-                          <input value={m[mi] || ""} onChange={(e) => setMeasured(r.balloon, mi, e.target.value)} />
-                        </td>
-                      );
-                    })}
-                    {cols.map((c) => {
-                      const val = c.values[String(r.balloon)] || "";
-                      const st = measureStatus(r.nominal, r.tol_low, r.tol_high, val);
-                      return (
-                        <td key={c.id} className={st !== "empty" ? `cell-${st}` : undefined}>
-                          <input
-                            value={val}
-                            onChange={(e) =>
-                              setCols((cs) =>
-                                cs.map((col) =>
-                                  col.id === c.id
-                                    ? { ...col, values: { ...col.values, [String(r.balloon)]: e.target.value } }
-                                    : col,
-                                ),
-                              )
-                            }
-                          />
-                        </td>
-                      );
-                    })}
-                    <td>
-                      <input value={r.remarks} onChange={(e) => updateRowByBalloon(r.balloon, { remarks: e.target.value })} />
-                    </td>
-                  </tr>
-                );
-              })}
+                  <td>
+                    <select
+                      className="report-select"
+                      value={r.instr_id || ""}
+                      onChange={(e) => updateRowByBalloon(r.balloon, { instr_id: e.target.value })}
+                    >
+                      <option value=""></option>
+                      {instrumentIdOptions(r.instrument, r.instr_id).map((id) => (
+                        <option key={`${idRev}-${id}`} value={id}>
+                          {id}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  {cols.map((c) => {
+                    const legacy = (r.measured || [])[cols.indexOf(c)] || "";
+                    const val = c.values[String(r.balloon)] ?? legacy;
+                    const st = measureStatus(r.nominal, r.tol_low, r.tol_high, val);
+                    return (
+                      <td key={c.id} className={st !== "empty" ? `cell-${st}` : undefined}>
+                        <input value={val} onChange={(e) => setColValue(c.id, r.balloon, e.target.value)} />
+                      </td>
+                    );
+                  })}
+                  <td>
+                    <input value={r.remarks} onChange={(e) => updateRowByBalloon(r.balloon, { remarks: e.target.value })} />
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -942,19 +1249,21 @@ function ReportPanel({
   );
 }
 
-function Field({
+function TitleField({
   label,
   value,
   onChange,
+  wide,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
+  wide?: boolean;
 }) {
   return (
-    <div className="field" style={{ margin: 0, minWidth: 140 }}>
-      <label>{label}</label>
-      <input value={value} onChange={(e) => onChange(e.target.value)} />
+    <div className={`report-title-cell ${wide ? "wide" : ""}`}>
+      <span className="report-title-label">{label}</span>
+      <input className="report-title-value" value={value} onChange={(e) => onChange(e.target.value)} />
     </div>
   );
 }

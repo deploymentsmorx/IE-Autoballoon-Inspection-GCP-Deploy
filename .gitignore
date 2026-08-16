@@ -16,7 +16,10 @@ venv/
 # Node / frontend
 frontend/node_modules/
 frontend/dist/
+frontend/dist-desktop/
 frontend/.vite/
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
 
 # Runtime / job data
 backend/data/jobs/
@@ -32,7 +35,8 @@ Thumbs.db
 .vscode/
 *.log
 
-# Temp renders
+# Temp renders / local checks
 _*.jpg
 _*.png
+_*.pdf
 *.ocr.pdf
