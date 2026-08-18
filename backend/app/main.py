@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +14,12 @@ from app.utils import storage_mode
 
 app = FastAPI(title="SmorX AutoBalloon API", version="1.0.0")
 DB_MODE = "unknown"
+
+# Extra production frontend origins (comma-separated), set via env at deploy time
+# so hosting domains don't require a code change/rebuild to allow.
+_extra_origins = [
+    o.strip() for o in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,6 +35,8 @@ app.add_middleware(
         "http://tauri.localhost",
         "https://localhost",
         "http://localhost",
+        "https://autoballoon-web-827464408309.us-central1.run.app",
+        *_extra_origins,
     ],
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|tauri\.localhost)(:\d+)?",
     allow_credentials=True,
