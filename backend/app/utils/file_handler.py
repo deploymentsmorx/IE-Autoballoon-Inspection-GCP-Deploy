@@ -30,18 +30,19 @@ LOCAL_ROOT = ROOT / "data" / "jobs"
 
 
 def s3_enabled() -> bool:
-    return bool(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_S3_BUCKET)
+    """S3 is on when a bucket is set. Keys are optional (EC2 IAM role / default chain)."""
+    return bool(AWS_S3_BUCKET)
 
 
 def _client():
     import boto3
 
-    return boto3.client(
-        "s3",
-        region_name=AWS_REGION,
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    )
+    kwargs = {"region_name": AWS_REGION}
+    # Pass explicit keys only when both are set. Empty strings would block the IAM role chain.
+    if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
+        kwargs["aws_access_key_id"] = AWS_ACCESS_KEY_ID
+        kwargs["aws_secret_access_key"] = AWS_SECRET_ACCESS_KEY
+    return boto3.client("s3", **kwargs)
 
 
 def sanitize_username(username: str) -> str:

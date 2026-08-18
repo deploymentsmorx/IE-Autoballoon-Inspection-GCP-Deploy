@@ -31,4 +31,4 @@ AutoBalloon.exe → FastAPI → Neon Postgres (metadata)
 
 Configure `backend/.env` from `.env.example`.
 
-**Production S3:** `autoballoon-storage-smorx-prod` (us-east-1) — [bucket URL](https://autoballoon-storage-smorx-prod.s3.us-east-1.amazonaws.com/). PDFs are stored per user under `{prefix}/{username}/{job_id}/`. Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` on the server. Health shows `"storage": "s3"`, `"s3_bucket"`, and `"s3_url"` when enabled.
+**Production S3:** `autoballoon-storage-smorx-prod` (us-east-1) — [bucket URL](https://autoballoon-storage-smorx-prod.s3.us-east-1.amazonaws.com/). PDFs are stored per user under `{prefix}/{username}/{job_id}/`. On EC2, leave AWS keys blank and attach an IAM role with `s3:PutObject` / `s3:GetObject`. Health shows `"storage": "s3"`, `"s3_bucket"`, and `"s3_url"` when a bucket is configured.

@@ -51,7 +51,7 @@ Use **IAM roles** on EC2 or a deployment `.env.production` file on the server on
 | **Security group** | Inbound: **22** (SSH), **9686** (API), **8080** (web). Prefer **443** with nginx + SSL later |
 | **S3** | `autoballoon-storage-smorx-prod` (us-east-1) — `https://autoballoon-storage-smorx-prod.s3.us-east-1.amazonaws.com/` |
 | **Neon** | Existing Postgres URL |
-| **IAM role** | EC2 role with `s3:PutObject`, `s3:GetObject` on bucket (better than long-lived keys) |
+| **IAM role** | EC2 instance role with `s3:PutObject`, `s3:GetObject` on the bucket. Leave `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` blank so boto3 uses this role. |
 
 ---
 
@@ -80,8 +80,8 @@ PWD_PEPPER=...
 AWS_S3_BUCKET=autoballoon-storage-smorx-prod
 AWS_REGION=us-east-1
 AWS_S3_URL=https://autoballoon-storage-smorx-prod.s3.us-east-1.amazonaws.com
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
 CORS_ORIGINS=http://YOUR_EC2_IP:8080
 VITE_API_URL=http://YOUR_EC2_IP:9686
 UVICORN_WORKERS=2
