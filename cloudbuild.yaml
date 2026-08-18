@@ -1,0 +1,70 @@
+steps:
+  # --- Backend: build, push, deploy ---
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - build
+      - "-t"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/smorx-backend/autoballoon-api:$SHORT_SHA"
+      - "-t"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/smorx-backend/autoballoon-api:latest"
+      - "./backend"
+    id: build-backend
+
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - push
+      - "--all-tags"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/smorx-backend/autoballoon-api"
+    id: push-backend
+    waitFor: ["build-backend"]
+
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - autoballoon-api
+      - "--image=us-central1-docker.pkg.dev/$PROJECT_ID/smorx-backend/autoballoon-api:$SHORT_SHA"
+      - "--region=us-central1"
+      - "--platform=managed"
+      - "--allow-unauthenticated"
+      - "--port=9686"
+      - "--set-secrets=JWT_SECRET=JWT_SECRET:latest,PWD_PEPPER=PWD_PEPPER:latest,DATABASE_URL=DATABASE_URL:latest"
+    id: deploy-backend
+    waitFor: ["push-backend"]
+
+  # --- Frontend: build, push, deploy ---
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - build
+      - "-t"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/smorx-frontend/autoballoon-web:$SHORT_SHA"
+      - "-t"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/smorx-frontend/autoballoon-web:latest"
+      - "./frontend"
+    id: build-frontend
+
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - push
+      - "--all-tags"
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/smorx-frontend/autoballoon-web"
+    id: push-frontend
+    waitFor: ["build-frontend"]
+
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - autoballoon-web
+      - "--image=us-central1-docker.pkg.dev/$PROJECT_ID/smorx-frontend/autoballoon-web:$SHORT_SHA"
+      - "--region=us-central1"
+      - "--platform=managed"
+      - "--allow-unauthenticated"
+      - "--port=8080"
+    id: deploy-frontend
+    waitFor: ["push-frontend"]
+
+options:
+  logging: CLOUD_LOGGING_ONLY
