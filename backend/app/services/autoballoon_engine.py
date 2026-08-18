@@ -68,57 +68,57 @@ def ocr_available() -> bool:
 
 _EXCLUSION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("skip_keyword", re.compile(
-        r"(?i)^(sheet\s*(?:size|:|-)|sheet\s+\d+\s+of\b|rev(?:ision)?\b|date\b|scale\b|"
+        r"^(sheet\s*(?:size|:|-)|sheet\s+\d+\s+of\b|rev(?:ision)?\b|date\b|scale\b|"
         r"dwg\b|drg\b|drawing\b|material\b|finish\b|note\b|"
         r"item\b|qty\b|part\b|page\b|proj\b|checked\b|approved\b|title\b|iso\b|asme\b|a[0-4]\b|"
         r"all\s+dims?\b|unless\b|otherwise\b|specified\b|detail\b|meters\b|approx\b|"
-        r"millimeters\b|view\b|section\b|refer\b|general\b|welded\b|assembly\b|length\b).*"
-    )),
+        r"millimeters\b|view\b|section\b|refer\b|general\b|welded\b|assembly\b|length\b).*",
+        re.IGNORECASE)),
     # Drafter / drawing stamps: DRD180828, DCC-TMP12-v2.0
-    ("drafter_stamp", re.compile(r"(?i)^DRD\d{5,}$")),
-    ("dcc_code", re.compile(r"(?i)^DCC[-A-Z0-9.]+$")),
+    ("drafter_stamp", re.compile(r"^DRD\d{5,}$", re.IGNORECASE)),
+    ("dcc_code", re.compile(r"^DCC[-A-Z0-9.]+$", re.IGNORECASE)),
     # IDs/part codes — not plate sizes, not metric threads, not DIA callouts
     ("id_code", re.compile(
-        r"(?i)^(?!\d+[x×]\d+(?:[x×]\d+)?$)"
+        r"^(?!\d+[x×]\d+(?:[x×]\d+)?$)"
         r"(?!M\d)"
         r"(?!DIA)"
-        r"(?=.*[A-Za-z])[A-Za-z0-9._\-]{5,}$"
-    )),
+        r"(?=.*[A-Za-z])[A-Za-z0-9._\-]{5,}$",
+        re.IGNORECASE)),
     # IS 2102 general-tolerance note (title block)
-    ("is_2102_note", re.compile(r"(?i).*AS\s+PER\s+IS\s*:?\s*2102.*")),
-    ("is_note", re.compile(r"(?i).*AS\s+PER\s+IS\s*:?\s*\d+.*")),
+    ("is_2102_note", re.compile(r".*AS\s+PER\s+IS\s*:?\s*2102.*", re.IGNORECASE)),
+    ("is_note", re.compile(r".*AS\s+PER\s+IS\s*:?\s*\d+.*", re.IGNORECASE)),
     # IS material / spec citations: IS 513:2010 …
-    ("is_material_spec", re.compile(r"(?i).*IS\s*\d+\s*:\s*\d{4}.*")),
+    ("is_material_spec", re.compile(r".*IS\s*\d+\s*:\s*\d{4}.*", re.IGNORECASE)),
     # ISO 2768 / IS roughness grade table words
     ("iso_2768_grade", re.compile(
-        r"(?i).*\b(EXTRA\s+COARSE|COARSE|MEDIUM|FINE|VERY\s+FINE)\b.*"
-    )),
+        r".*\b(EXTRA\s+COARSE|COARSE|MEDIUM|FINE|VERY\s+FINE)\b.*",
+        re.IGNORECASE)),
     ("roughness_key", re.compile(
-        r"(?i)^X?\s*0+(\s+0+)*(\s+X\s*0+)*\s*(EXTRA\s+COARSE|COARSE|MEDIUM|FINE)?$"
-    )),
-    ("thread_class_note", re.compile(r"(?i)^CLASS\s+\d+[HhGgEe]$")),
+        r"^X?\s*0+(\s+0+)*(\s+X\s*0+)*\s*(EXTRA\s+COARSE|COARSE|MEDIUM|FINE)?$",
+        re.IGNORECASE)),
+    ("thread_class_note", re.compile(r"^CLASS\s+\d+[HhGgEe]$", re.IGNORECASE)),
     # QTY / (x4) quantity markers — SP 46 practice
     ("qty_marker", re.compile(
-        r"(?i)^\(?\s*[x×]\s*\d+\s*\)?$|"
-        r"(?i)^QTY\b.*|"
-        r"(?i)^\d+\s*NOS\.?$|"
-        r"(?i)^NOS\.?$"
-    )),
+        r"^\(?\s*[x×]\s*\d+\s*\)?$|"
+        r"^QTY\b.*|"
+        r"^\d+\s*NOS\.?$|"
+        r"^NOS\.?$",
+        re.IGNORECASE)),
     # Note-reference numbers (not dimensions): SEE NOTE 3 / NOTE-3
     ("note_ref", re.compile(
-        r"(?i)^(?:SEE\s+)?NOTES?\s*:?-?\s*\d+$|"
-        r"(?i)^PRESS\s*FIT\b.*NOTE.*"
-    )),
+        r"^(?:SEE\s+)?NOTES?\s*:?-?\s*\d+$|"
+        r"^PRESS\s*FIT\b.*NOTE.*",
+        re.IGNORECASE)),
     # Length stated in meters only (mm closed/open lengths are real dims)
     ("meters_note", re.compile(
-        r"(?i).*\d+(?:[.,]\d+)?\s*METERS?\b.*"
-    )),
+        r".*\d+(?:[.,]\d+)?\s*METERS?\b.*",
+        re.IGNORECASE)),
     ("grid_zone", re.compile(r"^[A-Z]$")),  # sheet letter columns only; not R10
     # Lone 1-digit counters / item markers — 2-digit mm dims are common on fab drawings
     ("bare_int", re.compile(r"^\d$")),
     ("long_int", re.compile(r"^\d{6,}$")),  # part numbers; 4–5 digit overall dims OK
     ("scale_ratio", re.compile(r"^\d+\s*:\s*\d+$")),
-    ("date_like", re.compile(r"(?i).*\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4}.*")),
+    ("date_like", re.compile(r".*\d{1,2}[-/][A-Za-z]{3}[-/]\d{2,4}.*", re.IGNORECASE)),
     # Title-block Ra / GD&T-looking micro values — only accept via FCF / roughness
     # geometry paths (bare 0.05/0.2 spam title blocks and limit notes).
     ("surface_ra", re.compile(r"^(?:0\.025|0\.05|0\.1|0\.2|0\.4)$")),
@@ -138,43 +138,43 @@ _INDIAN_PATTERN_NAMES = frozenset({
 # Title-block identity fields (drawing / rev / part) — balloon these intentionally
 _IDENTITY_LABEL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("drawing_no", re.compile(
-        r"(?i)^(?:DRAWING|DWG|DRG)\.?\s*NO\.?\s*:?$|"
-        r"(?i)^(?:DRAWING|DWG|DRG)\.?\s*NUMBER\s*:?$"
-    )),
+        r"^(?:DRAWING|DWG|DRG)\.?\s*NO\.?\s*:?$|"
+        r"^(?:DRAWING|DWG|DRG)\.?\s*NUMBER\s*:?$",
+        re.IGNORECASE)),
     ("revision", re.compile(
-        r"(?i)^REV(?:ISION)?\.?\s*:?$|"
-        r"(?i)^REV\.?\s*FOLIO$"
-    )),
+        r"^REV(?:ISION)?\.?\s*:?$|"
+        r"^REV\.?\s*FOLIO$",
+        re.IGNORECASE)),
     ("part_no", re.compile(
-        r"(?i)^PART\s*(?:NO\.?|NUMBER|#)\s*:?$|"
-        r"(?i)^P\s*/\s*N\s*:?$|"
-        r"(?i)^P/?N$"
-    )),
+        r"^PART\s*(?:NO\.?|NUMBER|#)\s*:?$|"
+        r"^P\s*/\s*N\s*:?$|"
+        r"^P/?N$",
+        re.IGNORECASE)),
 ]
 
 _IDENTITY_COMBINED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("drawing_no", re.compile(
-        r"(?i)^(?:DRAWING|DWG|DRG)\.?\s*NO\.?\s*:?\s*"
-        r"([A-Z]{0,4}\d{5,}(?:[-./][A-Z0-9]+)*)$"
-    )),
+        r"^(?:DRAWING|DWG|DRG)\.?\s*NO\.?\s*:?\s*"
+        r"([A-Z]{0,4}\d{5,}(?:[-./][A-Z0-9]+)*)$",
+        re.IGNORECASE)),
     ("revision", re.compile(
-        r"(?i)^REV(?:ISION)?\.?\s*:?\s*([A-Z0-9]{1,3})$"
-    )),
+        r"^REV(?:ISION)?\.?\s*:?\s*([A-Z0-9]{1,3})$",
+        re.IGNORECASE)),
     ("part_no", re.compile(
-        r"(?i)^(?:PART\s*(?:NO\.?|NUMBER|#)|P\s*/\s*N|P/?N)\s*:?\s*"
-        r"([A-Z]{0,4}\d{5,}(?:[-./][A-Z0-9]+)*)$"
-    )),
+        r"^(?:PART\s*(?:NO\.?|NUMBER|#)|P\s*/\s*N|P/?N)\s*:?\s*"
+        r"([A-Z]{0,4}\d{5,}(?:[-./][A-Z0-9]+)*)$",
+        re.IGNORECASE)),
 ]
 
 _DRAWING_VALUE_RE = re.compile(
-    r"(?i)^(?:DRD|DCC)?\d{6,}(?:[-./][A-Z0-9]+)*$|"
-    r"(?i)^\d{6,}[-./][A-Z0-9]+(?:[-./][A-Z0-9]+)*$"
-)
+    r"^(?:DRD|DCC)?\d{6,}(?:[-./][A-Z0-9]+)*$|"
+    r"^\d{6,}[-./][A-Z0-9]+(?:[-./][A-Z0-9]+)*$",
+    re.IGNORECASE)
 # Sheet rev: letter, letter+digit, or 01–99 (not bare 0)
 _REV_VALUE_RE = re.compile(r"^(?:[A-Z]|[A-Z]\d|[1-9]\d?|0[1-9])$")
 _PART_VALUE_RE = re.compile(
-    r"(?i)^(?:DRD)?\d{6,}(?:[-./][A-Z0-9]+)*$"
-)
+    r"^(?:DRD)?\d{6,}(?:[-./][A-Z0-9]+)*$",
+    re.IGNORECASE)
 
 
 def _in_identity_zone(x: float, y: float, page_rect: fitz.Rect) -> bool:
@@ -210,78 +210,78 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     # --- diameter (IS 10714) — symbol forms first ---
     # Optional qty (xN) / TYP / THRU HOLES suffixes (common on Tata vertical callouts)
     ("diameter_symbol", re.compile(
-        r"(?i)^[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?"
+        r"^[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?"
         r"(?:\s*[HhGgFfEeNnPp]\d{1,2}(?:\s*/\s*[HhGgFfEeNnPp]\d{1,2})?)?"
         r"(?:\s*±\s*\d+(?:[.,]\d+)?)?"
         r"(?:\s*\(\s*[x×X]\s*\d+\s*\))?"
-        r"(?:\s*(?:TYP\.?|TYPICAL|THRU|THROUGH)(?:\s*HOLES?)?)?$"
-    ), "diameter"),
+        r"(?:\s*(?:TYP\.?|TYPICAL|THRU|THROUGH)(?:\s*HOLES?)?)?$",
+        re.IGNORECASE), "diameter"),
     # O as ⌀ substitute — ONLY when adjacent to a decimal (avoids NOS/COARSE)
     ("diameter_O", re.compile(
-        r"(?i)^O\s*\d+[.,]\d+(?:\s*(?:THRU|THROUGH))?(?:\s*\([^)]*\))?$"
-    ), "diameter"),
+        r"^O\s*\d+[.,]\d+(?:\s*(?:THRU|THROUGH))?(?:\s*\([^)]*\))?$",
+        re.IGNORECASE), "diameter"),
     ("diameter_O_suffix", re.compile(
-        r"(?i)^\d+[.,]\d+\s*O(?:\s*(?:THRU|THROUGH))?(?:\s*\([^)]*\))?$"
-    ), "diameter"),
+        r"^\d+[.,]\d+\s*O(?:\s*(?:THRU|THROUGH))?(?:\s*\([^)]*\))?$",
+        re.IGNORECASE), "diameter"),
     ("diameter_dia", re.compile(
-        r"(?i)^(?:DIA|DIAM)\.?\s*\d+(?:[.,]\d+)?"
+        r"^(?:DIA|DIAM)\.?\s*\d+(?:[.,]\d+)?"
         r"(?:\s*[x×]\s*\d+(?:[.,]\d+)?(?:\s*deep)?)?"
         r"(?:\s*holes?(?:-\d+\s*nos)?)?"
         r"(?:\s*\(\s*[x×]?\s*\d+\s*\))?$|"
-        r"(?i)^\d+(?:[.,]\d+)?\s*(?:DIA|DIAM)\.?$"
-    ), "diameter"),
+        r"^\d+(?:[.,]\d+)?\s*(?:DIA|DIAM)\.?$",
+        re.IGNORECASE), "diameter"),
     ("spherical_dia", re.compile(
-        r"(?i)^S[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?$"
-    ), "diameter"),
+        r"^S[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?$",
+        re.IGNORECASE), "diameter"),
     # Multi-line hole callout kept as one token after merge
     ("diameter_thru_holes", re.compile(
-        r"(?i)^[Ø⌀φΦ∅]?\s*\d+(?:[.,]\d+)?\s*\(\s*[x×]?\s*\d+\s*\)\s*"
+        r"^[Ø⌀φΦ∅]?\s*\d+(?:[.,]\d+)?\s*\(\s*[x×]?\s*\d+\s*\)\s*"
         r"(?:THRU|THROUGH)\s*HOLES?$|"
-        r"(?i)^[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?\s*\(\s*[x×]?\s*\d+\s*\)\s*"
-        r"(?:THRU|THROUGH)\s*HOLES?$"
-    ), "diameter"),
+        r"^[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?\s*\(\s*[x×]?\s*\d+\s*\)\s*"
+        r"(?:THRU|THROUGH)\s*HOLES?$",
+        re.IGNORECASE), "diameter"),
     # OD / ID tube callouts (shop fab notes)
     ("od_id", re.compile(
-        r"(?i)^(?:OD|ID)\s*\d+(?:[.,]\d+)?$|"
-        r"(?i)^OD\s*\d+(?:[.,]\d+)?\s*[x×]\s*ID\s*\d+(?:[.,]\d+)?"
-        r"(?:\s*-\s*\d+\s*long)?$"
-    ), "diameter"),
+        r"^(?:OD|ID)\s*\d+(?:[.,]\d+)?$|"
+        r"^OD\s*\d+(?:[.,]\d+)?\s*[x×]\s*ID\s*\d+(?:[.,]\d+)?"
+        r"(?:\s*-\s*\d+\s*long)?$",
+        re.IGNORECASE), "diameter"),
     # Bush / pin OD notes on BOM: BUSH DIA-60- …
     ("bush_dia", re.compile(
-        r"(?i)^BUSH\s*DIA\s*-?\s*\d+(?:[.,]\d+)?\b.*"
-    ), "diameter"),
+        r"^BUSH\s*DIA\s*-?\s*\d+(?:[.,]\d+)?\b.*",
+        re.IGNORECASE), "diameter"),
     # Ext / Int length callouts (European fab)
     ("ext_int", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*(?:Ext|Int|EXT|INT)\.?$"
-    ), "linear"),
+        r"^\d+(?:[.,]\d+)?\s*(?:Ext|Int|EXT|INT)\.?$",
+        re.IGNORECASE), "linear"),
     # Chain dims wrapped in equals: =770±2=
     ("equals_tol", re.compile(
         r"^=\s*\d+(?:[.,]\d+)?\s*±\s*\d+(?:[.,]\d+)?\s*=$"
     ), "tolerance"),
     # Labeled geometric notes: Bore dia : 130 mm / Stroke : 1100 mm
     ("labeled_mm", re.compile(
-        r"(?i)^(?:bore\s*dia|rod\s*dia|stroke|closed\s*length|open\s*length|"
+        r"^(?:bore\s*dia|rod\s*dia|stroke|closed\s*length|open\s*length|"
         r"overall\s*length|width|height|depth|thickness|pitch|centres?)\s*:?\s*"
-        r"\d+(?:[.,]\d+)?\s*mm$"
-    ), "linear"),
+        r"\d+(?:[.,]\d+)?\s*mm$",
+        re.IGNORECASE), "linear"),
     ("labeled_mm_generic", re.compile(
-        r"(?i)^[A-Za-z][A-Za-z0-9\s/.\-]{0,28}:\s*\d+(?:[.,]\d+)?\s*mm$"
-    ), "linear"),
+        r"^[A-Za-z][A-Za-z0-9\s/.\-]{0,28}:\s*\d+(?:[.,]\d+)?\s*mm$",
+        re.IGNORECASE), "linear"),
     # Min / Max travel ranges on hydraulic sheets
     ("min_max_range", re.compile(
-        r"(?i)^Min\s*\d+(?:[.,]\d+)?\s*(?:&|and)\s*Max\s*\d+(?:[.,]\d+)?$"
-    ), "linear"),
+        r"^Min\s*\d+(?:[.,]\d+)?\s*(?:&|and)\s*Max\s*\d+(?:[.,]\d+)?$",
+        re.IGNORECASE), "linear"),
     # Plate / section sizes — allow spaces: 1050 X 55, 776 X 25 X 25, 12x12
     ("plate_size", re.compile(
-        r"(?i)^\d{2,}\s*[x×]\s*\d{2,}(?:\s*[x×]\s*\d{1,3})?"
-        r"(?:\s*-\s*\d{2,5}\s*(?:long|nos))?$"
-    ), "linear"),
+        r"^\d{2,}\s*[x×]\s*\d{2,}(?:\s*[x×]\s*\d{1,3})?"
+        r"(?:\s*-\s*\d{2,5}\s*(?:long|nos))?$",
+        re.IGNORECASE), "linear"),
     # Intermittent / stitch weld length pitch: 50x (20) x50
     ("weld_pitch", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*[x×]\s*"
+        r"^\d+(?:[.,]\d+)?\s*[x×]\s*"
         r"\(\s*\d+(?:[.,]\d+)?\s*\)\s*"
-        r"[x×]\s*\d+(?:[.,]\d+)?$"
-    ), "weld"),
+        r"[x×]\s*\d+(?:[.,]\d+)?$",
+        re.IGNORECASE), "weld"),
     # IS 813 fillet size-length-pitch on weld leader: 6-50-100 / 6 - 50 - 100
     ("weld_size_len_pitch", re.compile(
         r"^(?:[1-9]|1[0-2])\s*-\s*\d{1,4}\s*-\s*\d{1,4}$"
@@ -292,128 +292,128 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ), "linear"),
     # Sheet-metal bend callouts
     ("bend_radius", re.compile(
-        r"(?i)^BEND\s*R\s*\d+(?:[.,]\d+)?(?:\s*(?:TYP\.?|TYPICAL))?$|"
-        r"(?i)^MIN\s*BEND\s*R(?:ADIUS)?\s*\d+(?:[.,]\d+)?(?:\s*[x×]\s*THK\.?)?$"
-    ), "feature"),
+        r"^BEND\s*R\s*\d+(?:[.,]\d+)?(?:\s*(?:TYP\.?|TYPICAL))?$|"
+        r"^MIN\s*BEND\s*R(?:ADIUS)?\s*\d+(?:[.,]\d+)?(?:\s*[x×]\s*THK\.?)?$",
+        re.IGNORECASE), "feature"),
     # Knurling / spotface compound notes
     ("knurl", re.compile(
-        r"(?i)^KNURL\b.*\d+(?:[.,]\d+)?.*"
-    ), "feature"),
+        r"^KNURL\b.*\d+(?:[.,]\d+)?.*",
+        re.IGNORECASE), "feature"),
     ("spotface", re.compile(
-        r"(?i)^(?:SF|SPOT\s*FACE|C'?BORE|COUNTERBORE)\b.*\d+(?:[.,]\d+)?.*"
-    ), "feature"),
+        r"^(?:SF|SPOT\s*FACE|C'?BORE|COUNTERBORE)\b.*\d+(?:[.,]\d+)?.*",
+        re.IGNORECASE), "feature"),
     # Envelope requirement (ISO 8015 / IS 8000)
     ("envelope_e", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*Ⓔ\s*$|"
-        r"(?i)^Ⓔ\s*\d+(?:[.,]\d+)?$"
-    ), "tolerance"),
+        r"^\d+(?:[.,]\d+)?\s*Ⓔ\s*$|"
+        r"^Ⓔ\s*\d+(?:[.,]\d+)?$",
+        re.IGNORECASE), "tolerance"),
     # BOM material thickness notes (vertical BOM columns on Tata A2/A3)
     ("material_thk", re.compile(
-        r"(?i)^(?:PLATE|L\s*ANGLES?|FLAT|SHEET|ERW\s*TUBE|BLOCK|TUBE)\s*-?\s*"
-        r"\d+(?:[.,]\d+)?\s*THK\.?\b.*"
-    ), "feature"),
+        r"^(?:PLATE|L\s*ANGLES?|FLAT|SHEET|ERW\s*TUBE|BLOCK|TUBE)\s*-?\s*"
+        r"\d+(?:[.,]\d+)?\s*THK\.?\b.*",
+        re.IGNORECASE), "feature"),
     # Clearance hole class (IS/ISO fit on hole charts)
     ("clear_fit", re.compile(
-        r"(?i)^CLEAR\s+[Hh]\d{1,2}$"
-    ), "fit"),
+        r"^CLEAR\s+[Hh]\d{1,2}$",
+        re.IGNORECASE), "fit"),
     # BOM cut-length lines: a) 5500mm-4nos / a)-1095-6nos
     ("bom_cut_length", re.compile(
-        r"(?i)^[a-z]\)\s*-?\d+(?:[.,]\d+)?(?:\s*mm)?"
-        r"(?:\s*-\s*\d+\s*nos)?$"
-    ), "linear"),
+        r"^[a-z]\)\s*-?\d+(?:[.,]\d+)?(?:\s*mm)?"
+        r"(?:\s*-\s*\d+\s*nos)?$",
+        re.IGNORECASE), "linear"),
     # Clevis / plate BOM dims with qty suffix
     ("named_plate", re.compile(
-        r"(?i)^(?:\d+\.\d+\s+)?clevis(?:\s+plate)?\s+"
-        r"\d+[x×]\d+[x×]\d+(?:\s*-\s*\d+\s*nos)?$"
-    ), "linear"),
+        r"^(?:\d+\.\d+\s+)?clevis(?:\s+plate)?\s+"
+        r"\d+[x×]\d+[x×]\d+(?:\s*-\s*\d+\s*nos)?$",
+        re.IGNORECASE), "linear"),
     # Undercut / groove shop notes
     ("undercut", re.compile(
-        r"(?i)^U/?C\s*-?\s*\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*deep$|"
-        r"(?i)^UNDERCUT\s*\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?$|"
-        r"(?i)^GROOVE\s*\d+(?:[.,]\d+)?(?:\s*[x×]\s*\d+(?:[.,]\d+)?)?$"
-    ), "feature"),
+        r"^U/?C\s*-?\s*\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*deep$|"
+        r"^UNDERCUT\s*\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?$|"
+        r"^GROOVE\s*\d+(?:[.,]\d+)?(?:\s*[x×]\s*\d+(?:[.,]\d+)?)?$",
+        re.IGNORECASE), "feature"),
 
     # --- BSP / pipe thread (IS 554) BEFORE radius — R 1/4 vs R 10.0 ---
     ("bsp_thread_R", re.compile(
-        r"(?i)^R\s*\d+\s*/\s*\d+(?:\"|″)?(?:\s*(?:BSP|BSPT|BSPP))?$"
-    ), "thread"),
+        r"^R\s*\d+\s*/\s*\d+(?:\"|″)?(?:\s*(?:BSP|BSPT|BSPP))?$",
+        re.IGNORECASE), "thread"),
     ("bsp_thread_G", re.compile(
-        r"(?i)^(?:G\s*)?\d+(?:/\d+)?(?:\"|″)?\s*(?:BSP|BSPT|BSPP)"
+        r"^(?:G\s*)?\d+(?:/\d+)?(?:\"|″)?\s*(?:BSP|BSPT|BSPP)"
         r"(?:\s*[x×]\s*\d+(?:[.,]\d+)?\s*deep)?$|"
-        r"(?i)^\d+\s*/\s*\d+(?:\"|″)?\s*(?:BSP|BSPT|BSPP)"
+        r"^\d+\s*/\s*\d+(?:\"|″)?\s*(?:BSP|BSPT|BSPP)"
         r"(?:\s*[x×]\s*\d+(?:[.,]\d+)?\s*deep)?$|"
-        r"(?i)^G\s*\d+(?:/\d+)?$"
-    ), "thread"),
+        r"^G\s*\d+(?:/\d+)?$",
+        re.IGNORECASE), "thread"),
     ("bsp_port_labeled", re.compile(
-        r"(?i)^(?:pressure|breather)\s+port\s+size\s*:\s*"
-        r"\d+(?:/\d+)?(?:\"|″)?\s*(?:BSP|BSPT|BSPP)$"
-    ), "thread"),
+        r"^(?:pressure|breather)\s+port\s+size\s*:\s*"
+        r"\d+(?:/\d+)?(?:\"|″)?\s*(?:BSP|BSPT|BSPP)$",
+        re.IGNORECASE), "thread"),
 
     # --- radius (IS 10714) — decimal/integer after BSP fraction check ---
     ("radius", re.compile(
-        r"(?i)^R\s*\d+(?:[.,]\d+)?"
+        r"^R\s*\d+(?:[.,]\d+)?"
         r"(?:\s*±\s*\d+(?:[.,]\d+)?)?"
         r"(?:\s*\(\s*[x×X]\s*\d+\s*\))?"
-        r"(?:\s*(?:TYP\.?|TYPICAL))?$"
-    ), "radius"),
+        r"(?:\s*(?:TYP\.?|TYPICAL))?$",
+        re.IGNORECASE), "radius"),
     ("spherical_radius", re.compile(
-        r"(?i)^SR\s*\d+(?:[.,]\d+)?(?:\s*\([^)]*\))?$"
-    ), "radius"),
+        r"^SR\s*\d+(?:[.,]\d+)?(?:\s*\([^)]*\))?$",
+        re.IGNORECASE), "radius"),
 
     # --- IS 919 / IS 2709 fit classes (ISO 286) ---
     # Omit M (metric thread) and S (SECTION marks on Tata sheets).
     ("fit_class", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*[ABCDEFGHJKNPRTUVYZ]\d{1,2}"
+        r"^\d+(?:[.,]\d+)?\s*[ABCDEFGHJKNPRTUVYZ]\d{1,2}"
         r"(?:\s*/\s*[ABCDEFGHJKNPRTUVYZ]\d{1,2})?"
-        r"(?:\s*\([+\-]?\d+(?:[.,]\d+)?(?:\s*/\s*[+\-]?\d+(?:[.,]\d+)?)?\))?$"
-    ), "fit"),
+        r"(?:\s*\([+\-]?\d+(?:[.,]\d+)?(?:\s*/\s*[+\-]?\d+(?:[.,]\d+)?)?\))?$",
+        re.IGNORECASE), "fit"),
     ("fit_nom_min_max", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*(?:NOM|MIN|MAX)$"
-    ), "fit"),
+        r"^\d+(?:[.,]\d+)?\s*(?:NOM|MIN|MAX)$",
+        re.IGNORECASE), "fit"),
 
     # --- threads IS 4218 metric ---
     ("metric_thread", re.compile(
-        r"(?i)^M\d+(?:[.,]\d+)?(?:\s*[x×]\s*\d+(?:[.,]\d+)?)?"
+        r"^M\d+(?:[.,]\d+)?(?:\s*[x×]\s*\d+(?:[.,]\d+)?)?"
         r"(?:-\d+\s*nos)?"
         r"(?:\s*(?:THRU|THROUGH|TAP|TAPPING|DEEP|THRU\s+TAP(?:PING)?))?"
-        r"(?:\s*\([^)]*\))?$"
-    ), "thread"),
+        r"(?:\s*\([^)]*\))?$",
+        re.IGNORECASE), "thread"),
     # M6 x 15 DEEP TAPPING (x6) — vertical stacked hole callouts
     ("metric_thread_tapping", re.compile(
-        r"(?i)^M\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?"
+        r"^M\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?"
         r"\s*DEEP\s*(?:TAP(?:PING)?)?"
-        r"(?:\s*\(\s*[x×X]?\s*\d+\s*\))?$"
-    ), "thread"),
+        r"(?:\s*\(\s*[x×X]?\s*\d+\s*\))?$",
+        re.IGNORECASE), "thread"),
     # M6 - 8.0 DEEP / M6–8 DEEP
     ("metric_thread_deep", re.compile(
-        r"(?i)^M\d+(?:[.,]\d+)?\s*[-–—]\s*\d+(?:[.,]\d+)?\s*DEEP$"
-    ), "thread"),
+        r"^M\d+(?:[.,]\d+)?\s*[-–—]\s*\d+(?:[.,]\d+)?\s*DEEP$",
+        re.IGNORECASE), "thread"),
     # ØM6 ↧ 10mm / OM6`10mm (depth glyph often garbled)
     ("metric_thread_depth_mm", re.compile(
-        r"(?i)^[Ø⌀φΦ∅O]?\s*M\d+(?:[.,]\d+)?"
-        r"\s*[\u21A7`'\u2193vV]?\s*\d+(?:[.,]\d+)?\s*mm$"
-    ), "thread"),
+        r"^[Ø⌀φΦ∅O]?\s*M\d+(?:[.,]\d+)?"
+        r"\s*[\u21A7`'\u2193vV]?\s*\d+(?:[.,]\d+)?\s*mm$",
+        re.IGNORECASE), "thread"),
     ("unc_thread", re.compile(
-        r"(?i)^(?:#\d+|\d+/\d+)\s*-\s*\d+\s*(?:UNC|UNF|UNEF|UN)(?:\s*-?\s*[123][AB])?$"
-    ), "thread"),
+        r"^(?:#\d+|\d+/\d+)\s*-\s*\d+\s*(?:UNC|UNF|UNEF|UN)(?:\s*-?\s*[123][AB])?$",
+        re.IGNORECASE), "thread"),
 
     # Pitch circle diameter: Ø 85.0 P.C.D. / O 85.0 P.C.D. / 85.0 PCD
     ("pcd_diameter", re.compile(
-        r"(?i)^(?:[Ø⌀φΦ∅O]|DIA\.?)?\s*\d+(?:[.,]\d+)?\s*P\.?\s*C\.?\s*D\.?$"
-    ), "diameter"),
+        r"^(?:[Ø⌀φΦ∅O]|DIA\.?)?\s*\d+(?:[.,]\d+)?\s*P\.?\s*C\.?\s*D\.?$",
+        re.IGNORECASE), "diameter"),
 
     # --- angles / chamfers (IS convention — keep as one token) ---
     ("angle_deg", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*°(?:\s*\d{1,2}'(?:\s*\d{1,2}\")?)?"
+        r"^\d+(?:[.,]\d+)?\s*°(?:\s*\d{1,2}'(?:\s*\d{1,2}\")?)?"
         r"(?:\s*±\s*\d+(?:[.,]\d+)?°?)?"
         r"(?:\s*\(\s*[x×X]\s*\d+\s*\))?"
-        r"(?:\s*(?:TYP\.?|TYPICAL))?$"
-    ), "angle"),
+        r"(?:\s*(?:TYP\.?|TYPICAL))?$",
+        re.IGNORECASE), "angle"),
     ("is_chamfer", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*°"
+        r"^\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*°"
         r"(?:\s*(?:TYP\.?|TYPICAL))?(?:\s*\([^)]*\))?$|"
-        r"(?i)^\d+(?:[.,]\d+)?\s*[x×]\s*45(?:\s*(?:TYP\.?|TYPICAL))?(?:\s*\([^)]*\))?$"
-    ), "chamfer"),
+        r"^\d+(?:[.,]\d+)?\s*[x×]\s*45(?:\s*(?:TYP\.?|TYPICAL))?(?:\s*\([^)]*\))?$",
+        re.IGNORECASE), "chamfer"),
 
     # --- tolerances / limits ---
     ("tol_symmetric", re.compile(
@@ -428,50 +428,50 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
 
     # --- thickness / depth / holes ---
     ("thickness", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*THK\.?$"
-    ), "feature"),
+        r"^\d+(?:[.,]\d+)?\s*THK\.?$",
+        re.IGNORECASE), "feature"),
     # ISO thickness letter t (often vertical): t 10.0
     ("thickness_t", re.compile(
-        r"(?i)^t\s*\d+(?:[.,]\d+)?$"
-    ), "feature"),
+        r"^t\s*\d+(?:[.,]\d+)?$",
+        re.IGNORECASE), "feature"),
     ("depth", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*DEEP$|"
-        r"(?i)^[↧]\s*\d+(?:[.,]\d+)?$"
-    ), "feature"),
+        r"^\d+(?:[.,]\d+)?\s*DEEP$|"
+        r"^[↧]\s*\d+(?:[.,]\d+)?$",
+        re.IGNORECASE), "feature"),
     ("hole_thru", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*[Ø⌀φΦ∅O]?\s*(?:THRU|THROUGH)\s*(?:HOLES?)?"
-        r"(?:\s*\([^)]*\))?$"
-    ), "feature"),
+        r"^\d+(?:[.,]\d+)?\s*[Ø⌀φΦ∅O]?\s*(?:THRU|THROUGH)\s*(?:HOLES?)?"
+        r"(?:\s*\([^)]*\))?$",
+        re.IGNORECASE), "feature"),
     # Weld / feature size with TYP: 4 TYP, 3 TYP
     ("weld_typ", re.compile(
-        r"(?i)^(?:[2-9]|1[0-2])\s*(?:TYP\.?|TYPICAL)$"
-    ), "weld"),
+        r"^(?:[2-9]|1[0-2])\s*(?:TYP\.?|TYPICAL)$",
+        re.IGNORECASE), "weld"),
 
     # --- reference / auxiliary ---
     ("reference", re.compile(
-        r"(?i)^\(?\d+(?:[.,]\d+)?\)?\s*REF\.?(?:\s*\([^)]*\))?$"
-    ), "reference"),
+        r"^\(?\d+(?:[.,]\d+)?\)?\s*REF\.?(?:\s*\([^)]*\))?$",
+        re.IGNORECASE), "reference"),
     ("ref_paren", re.compile(
         r"^\(\s*\d{1,5}(?:[.,]\d+)?\s*\)$"
     ), "reference"),
 
     ("linear_mm", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*mm$"
-    ), "linear"),
+        r"^\d+(?:[.,]\d+)?\s*mm$",
+        re.IGNORECASE), "linear"),
 
     # Whole-mm integers + optional qty / TYP (4-digit alone ≈ part/job codes)
     ("linear_integer", re.compile(
-        r"(?i)^\d{2,3}"
+        r"^\d{2,3}"
         r"(?:\s*\(\s*[x×X]\s*\d+\s*\))?"
-        r"(?:\s*(?:TYP\.?|TYPICAL))?$"
-    ), "linear"),
+        r"(?:\s*(?:TYP\.?|TYPICAL))?$",
+        re.IGNORECASE), "linear"),
 
     # Decimal linear + optional qty / TYP: 509.3 (x2), 20.0 TYP
     ("linear_decimal", re.compile(
-        r"(?i)^\d+[.,]\d+"
+        r"^\d+[.,]\d+"
         r"(?:\s*\(\s*[x×X]\s*\d+\s*\))?"
-        r"(?:\s*(?:TYP\.?|TYPICAL))?$"
-    ), "linear"),
+        r"(?:\s*(?:TYP\.?|TYPICAL))?$",
+        re.IGNORECASE), "linear"),
 ]
 
 
@@ -582,7 +582,7 @@ def _identity_field_candidates(
         if kind is None:
             continue
         # Skip REV.BY style (drafter field, not sheet revision)
-        if re.match(r"(?i)^REV\.?\s*BY$", t):
+        if re.match(r"^REV\.?\s*BY$", t, re.IGNORECASE):
             continue
         if page_rect is not None:
             if kind in {"part_no", "drawing_no"}:
@@ -729,13 +729,13 @@ def _looks_like_id_code(text: str) -> bool:
     t = _clean(text)
     return bool(
         re.match(
-            r"(?i)^(?!\d+[x×]\d+(?:[x×]\d+)?$)"
+            r"^(?!\d+[x×]\d+(?:[x×]\d+)?$)"
             r"(?!M\d)"
             r"(?!DIA)"
             r"(?=.*[A-Za-z])[A-Za-z0-9._\-]{5,}$",
             t,
-        )
-        or re.match(r"(?i)^DRD\d{5,}$", t)
+            re.IGNORECASE)
+        or re.match(r"^DRD\d{5,}$", t, re.IGNORECASE)
     )
 
 
@@ -1061,7 +1061,7 @@ def _is_dimension(text: str) -> bool:
     if not matched:
         return False
     # Sheet-size false fits: "11 A0", "A1" style paper refs near title block text
-    if category == "fit" and re.match(r"(?i)^\d+(?:[.,]\d+)?\s*A[0-4]$", t):
+    if category == "fit" and re.match(r"^\d+(?:[.,]\d+)?\s*A[0-4]$", t, re.IGNORECASE):
         return False
     return True
 
@@ -1216,12 +1216,12 @@ def _merge_nearby_tol(
     def _is_unit_suffix(t: str) -> bool:
         # Fit suffixes omit S (section marks S22/S40) and M (threads)
         return bool(re.match(
-            r"(?i)^(THK\.?|THRU|THROUGH|TAP|TAPPING|DEEP|NOM|MIN|MAX|REF\.?|"
+            r"^(THK\.?|THRU|THROUGH|TAP|TAPPING|DEEP|NOM|MIN|MAX|REF\.?|"
             r"TYP\.?|TYPICAL|(?:THRU|THROUGH)\s*HOLES?|"
             r"P\.?\s*C\.?\s*D\.?|EQUISPACED|"
             r"[ABCDEFGHJKNPRTUVYZ]\d{1,2}|\(\s*[x×X]\s*\d+\s*\))$",
             _clean(t),
-        ))
+            re.IGNORECASE))
 
     def _is_limit_frag(t: str) -> bool:
         # Stacked fit limits drawn as separate lines: +0.030 / 0
@@ -1233,11 +1233,11 @@ def _merge_nearby_tol(
         t = _clean(t)
         return bool(
             re.match(r"^\(?\d+(?:[.,]\d+)?\)?$", t)
-            or re.match(r"(?i)^M\d+(?:[.,]\d+)?$", t)
-            or re.match(r"(?i)^R\s*\d+(?:[.,]\d+)?$", t)
-            or re.match(r"(?i)^[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?$", t)
-            or re.match(r"(?i)^\d+(?:[.,]\d+)?\s*REF\.?$", t)
-            or re.match(r"(?i)^\d+(?:[.,]\d+)?\s*[ABCDEFGHJKNPRTUVYZ]\d+$", t)
+            or re.match(r"^M\d+(?:[.,]\d+)?$", t, re.IGNORECASE)
+            or re.match(r"^R\s*\d+(?:[.,]\d+)?$", t, re.IGNORECASE)
+            or re.match(r"^[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?$", t, re.IGNORECASE)
+            or re.match(r"^\d+(?:[.,]\d+)?\s*REF\.?$", t, re.IGNORECASE)
+            or re.match(r"^\d+(?:[.,]\d+)?\s*[ABCDEFGHJKNPRTUVYZ]\d+$", t, re.IGNORECASE)
             or re.match(r"^\d+(?:[.,]\d+)?\s*°$", t)
         )
 
@@ -1296,7 +1296,7 @@ def _merge_nearby_tol(
             continue
         best_j = _nearest_host(
             i, rect, size,
-            lambda host: bool(re.match(r"(?i)^\d+(?:[.,]\d+)?\s*[A-Z]\d+$", host)),
+            lambda host: bool(re.match(r"^\d+(?:[.,]\d+)?\s*[A-Z]\d+$", host, re.IGNORECASE)),
         )
         if best_j is None:
             continue
@@ -1939,11 +1939,11 @@ def _gdt_tolerance_candidates(
         # Merged FCF row/column: symbol + tol + datum letter
         # 'n'/'I' ≈ ⊥, 'g' ≈ ∠, '_' ≈ flatness
         m = re.match(
-            r"(?i)^[n_Il1g⊥∠⌯⏤\u2212\- ag]{0,2}\s*"
+            r"^[n_Il1g⊥∠⌯⏤\u2212\- ag]{0,2}\s*"
             r"(0\.0[1-9]|0\.[1-9]\d?)\s*"
             r"([A-ZIJ]{0,2})$",
             t,
-        )
+            re.IGNORECASE)
         if m:
             val, datum = m.group(1), m.group(2)
             if val in {"0.1", "0.4", "0.025"} and not datum:
