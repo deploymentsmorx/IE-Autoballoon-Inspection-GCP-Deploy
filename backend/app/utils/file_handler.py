@@ -7,6 +7,7 @@ File storage: AWS S3 for PDFs when configured, else local disk fallback.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -16,9 +17,13 @@ load_dotenv(ROOT / ".env")
 
 AWS_ACCESS_KEY_ID = (os.getenv("AWS_ACCESS_KEY_ID") or "").strip()
 AWS_SECRET_ACCESS_KEY = (os.getenv("AWS_SECRET_ACCESS_KEY") or "").strip()
-AWS_S3_BUCKET = (os.getenv("AWS_S3_BUCKET") or "").strip()
-AWS_REGION = (os.getenv("AWS_REGION") or "us-east-2").strip()
+AWS_S3_BUCKET = (os.getenv("AWS_S3_BUCKET") or "autoballoon-storage-smorx-prod").strip()
+AWS_REGION = (os.getenv("AWS_REGION") or "us-east-1").strip()
 S3_PREFIX = (os.getenv("AWS_S3_PREFIX") or "autoballoon").strip().strip("/")
+AWS_S3_URL = (
+    os.getenv("AWS_S3_URL")
+    or f"https://{AWS_S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com"
+).strip().rstrip("/")
 
 # Local fallback root (same jobs folder used today)
 LOCAL_ROOT = ROOT / "data" / "jobs"
@@ -39,17 +44,35 @@ def _client():
     )
 
 
-def object_key(job_id: str, name: str) -> str:
+def sanitize_username(username: str) -> str:
+    """Safe S3 path segment from login username."""
+    s = (username or "").strip().lower()
+    s = re.sub(r"[^\w.-]", "_", s, flags=re.ASCII)
+    s = re.sub(r"_+", "_", s).strip("._")
+    return s or "unknown"
+
+
+def object_key(job_id: str, name: str, *, username: str | None = None) -> str:
     """Canonical S3 key / relative local path for a job file."""
     safe = Path(name).name.replace("\\", "/").lstrip("/")
+    user_seg = sanitize_username(username) if username else None
+    if user_seg:
+        return f"{S3_PREFIX}/{user_seg}/{job_id}/{safe}"
     return f"{S3_PREFIX}/{job_id}/{safe}"
 
 
-def put_bytes(job_id: str, name: str, data: bytes, content_type: str = "application/pdf") -> str:
+def put_bytes(
+    job_id: str,
+    name: str,
+    data: bytes,
+    content_type: str = "application/pdf",
+    *,
+    username: str | None = None,
+) -> str:
     """
     Store file bytes. Returns storage key (S3 key or local relative path).
     """
-    key = object_key(job_id, name)
+    key = object_key(job_id, name, username=username)
     if s3_enabled():
         _client().put_object(
             Bucket=AWS_S3_BUCKET,
@@ -65,8 +88,15 @@ def put_bytes(job_id: str, name: str, data: bytes, content_type: str = "applicat
     return key
 
 
-def put_file(job_id: str, name: str, path: Path, content_type: str = "application/pdf") -> str:
-    return put_bytes(job_id, name, path.read_bytes(), content_type=content_type)
+def put_file(
+    job_id: str,
+    name: str,
+    path: Path,
+    content_type: str = "application/pdf",
+    *,
+    username: str | None = None,
+) -> str:
+    return put_bytes(job_id, name, path.read_bytes(), content_type=content_type, username=username)
 
 
 def get_bytes(key: str) -> bytes:
@@ -78,7 +108,7 @@ def get_bytes(key: str) -> bytes:
         except Exception:
             # Fall through to local if key was written before S3 was enabled
             pass
-    # key format: prefix/job_id/filename  OR plain filename under jobs
+    # key format: prefix/username/job_id/filename OR prefix/job_id/filename (legacy)
     parts = key.replace("\\", "/").split("/")
     if len(parts) >= 2:
         job_id, fname = parts[-2], parts[-1]
@@ -96,3 +126,14 @@ def get_to_path(key: str, dest: Path) -> Path:
 
 def storage_mode() -> str:
     return "s3" if s3_enabled() else "local"
+
+
+def s3_base_url() -> str:
+    """Public bucket base URL (objects live at {base}/{key})."""
+    return AWS_S3_URL
+
+
+def object_url(key: str) -> str:
+    """Full HTTPS URL for a stored object key."""
+    safe = key.replace("\\", "/").lstrip("/")
+    return f"{AWS_S3_URL}/{safe}"

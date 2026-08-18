@@ -449,6 +449,7 @@ async def upload_pdfs(
     meta = {
         "id": job_id,
         "owner": user["id"],
+        "owner_username": user.get("username") or "",
         "files": saved,
         "active_file": 0,
         "page_count": page_count,

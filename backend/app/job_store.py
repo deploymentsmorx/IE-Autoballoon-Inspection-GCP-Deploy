@@ -141,6 +141,24 @@ def set_job_status(job_id: str, status: str, *, output_key: str | None = None) -
         db.commit()
 
 
+def _resolve_owner_username(meta: dict) -> str:
+    """Username folder segment for S3 keys (per-client drawing storage)."""
+    raw = str(meta.get("owner_username") or "").strip()
+    if raw:
+        return raw
+    owner_id = str(meta.get("owner") or "").strip()
+    if owner_id:
+        try:
+            from app.services import auth_service
+
+            user = auth_service.get_user(owner_id)
+            if user and user.get("username"):
+                return str(user["username"])
+        except Exception:
+            pass
+    return "unknown"
+
+
 def sync_job_files_to_storage(job_id: str, local_dir, meta: dict) -> dict:
     """
     Upload input (and output if present) PDFs to S3 when enabled.
@@ -148,13 +166,15 @@ def sync_job_files_to_storage(job_id: str, local_dir, meta: dict) -> dict:
     """
     files = meta.get("files") or []
     input_key = None
+    username = _resolve_owner_username(meta)
+    meta["owner_username"] = username
     for f in files:
         path_name = f.get("path")
         if not path_name:
             continue
         local = local_dir / path_name
         if local.exists():
-            key = storage.put_file(job_id, path_name, local)
+            key = storage.put_file(job_id, path_name, local, username=username)
             f["storage_key"] = key
             if input_key is None:
                 input_key = key
@@ -162,7 +182,7 @@ def sync_job_files_to_storage(job_id: str, local_dir, meta: dict) -> dict:
     out_path = local_dir / out_name
     output_key = None
     if out_path.exists():
-        output_key = storage.put_file(job_id, out_name, out_path)
+        output_key = storage.put_file(job_id, out_name, out_path, username=username)
         meta["s3_output_key"] = output_key
     if input_key:
         meta["s3_input_key"] = input_key

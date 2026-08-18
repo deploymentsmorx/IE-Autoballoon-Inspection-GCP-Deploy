@@ -1,0 +1,12 @@
+__pycache__
+*.py[cod]
+.venv
+venv
+.env
+.env.local
+data/jobs/*
+data/uploads/*
+*.log
+.git
+tests
+scripts/purge_demo_data.py

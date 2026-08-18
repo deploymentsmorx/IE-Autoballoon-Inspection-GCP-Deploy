@@ -1,0 +1,43 @@
+# Production stack: API + Web on one EC2 host
+# Usage:
+#   1. Copy deploy/.env.production.example → .env.production (fill secrets)
+#   2. docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: autoballoon-api
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+    ports:
+      - "9686:9686"
+    volumes:
+      - autoballoon-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9686/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: autoballoon-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  autoballoon-data:

@@ -5,10 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import auth, autoballoon, customers, users
-from app.core.config import STATIC
+from app.core.config import STATIC, cors_origin_list
 from app.core.security import hash_password
 from app.services import auth_service, autoballoon_service
-from app.utils import storage_mode
+from app.core.config import settings
+from app.utils import s3_base_url, s3_enabled, storage_mode
 
 app = FastAPI(title="SmorX AutoBalloon API", version="1.0.0")
 DB_MODE = "unknown"
@@ -27,12 +28,13 @@ app.add_middleware(
         "http://tauri.localhost",
         "https://localhost",
         "http://localhost",
+        *cors_origin_list(),
     ],
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|tauri\.localhost)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # Required for AutoBalloon.exe (WebView2 https://tauri.localhost → http://127.0.0.1:9686)
+    # Required for AutoBalloon.exe (WebView2 https://tauri.localhost → API on localhost/LAN)
     allow_private_network=True,
 )
 
@@ -60,9 +62,13 @@ def _startup():
 @app.get("/api/health")
 def health():
     # Keep this instant — OCR/DB probes here made the EXE look "unreachable".
-    return {
+    payload: dict = {
         "ok": True,
         "service": "smorx-autoballoon",
         "db": DB_MODE,
         "storage": storage_mode(),
     }
+    if s3_enabled():
+        payload["s3_bucket"] = settings.aws_s3_bucket
+        payload["s3_url"] = s3_base_url()
+    return payload
