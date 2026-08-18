@@ -98,16 +98,14 @@ _EXCLUSION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     )),
     ("thread_class_note", re.compile(r"(?i)^CLASS\s+\d+[HhGgEe]$")),
     # QTY / (x4) quantity markers — SP 46 practice
-    ("qty_marker", re.compile(
-        r"(?i)^\(?\s*[x×]\s*\d+\s*\)?$|"
-        r"(?i)^QTY\b.*|"
-        r"(?i)^\d+\s*NOS\.?$|"
-        r"(?i)^NOS\.?$"
+    ("qty_marker", re.compile(r"(?i)^\(?\s*[x×]\s*\d+\s*\)?$|"
+        r"^QTY\b.*|"
+        r"^\d+\s*NOS\.?$|"
+        r"^NOS\.?$"
     )),
     # Note-reference numbers (not dimensions): SEE NOTE 3 / NOTE-3
-    ("note_ref", re.compile(
-        r"(?i)^(?:SEE\s+)?NOTES?\s*:?-?\s*\d+$|"
-        r"(?i)^PRESS\s*FIT\b.*NOTE.*"
+    ("note_ref", re.compile(r"(?i)^(?:SEE\s+)?NOTES?\s*:?-?\s*\d+$|"
+        r"^PRESS\s*FIT\b.*NOTE.*"
     )),
     # Length stated in meters only (mm closed/open lengths are real dims)
     ("meters_note", re.compile(
@@ -137,18 +135,15 @@ _INDIAN_PATTERN_NAMES = frozenset({
 
 # Title-block identity fields (drawing / rev / part) — balloon these intentionally
 _IDENTITY_LABEL_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("drawing_no", re.compile(
-        r"(?i)^(?:DRAWING|DWG|DRG)\.?\s*NO\.?\s*:?$|"
-        r"(?i)^(?:DRAWING|DWG|DRG)\.?\s*NUMBER\s*:?$"
+    ("drawing_no", re.compile(r"(?i)^(?:DRAWING|DWG|DRG)\.?\s*NO\.?\s*:?$|"
+        r"^(?:DRAWING|DWG|DRG)\.?\s*NUMBER\s*:?$"
     )),
-    ("revision", re.compile(
-        r"(?i)^REV(?:ISION)?\.?\s*:?$|"
-        r"(?i)^REV\.?\s*FOLIO$"
+    ("revision", re.compile(r"(?i)^REV(?:ISION)?\.?\s*:?$|"
+        r"^REV\.?\s*FOLIO$"
     )),
-    ("part_no", re.compile(
-        r"(?i)^PART\s*(?:NO\.?|NUMBER|#)\s*:?$|"
-        r"(?i)^P\s*/\s*N\s*:?$|"
-        r"(?i)^P/?N$"
+    ("part_no", re.compile(r"(?i)^PART\s*(?:NO\.?|NUMBER|#)\s*:?$|"
+        r"^P\s*/\s*N\s*:?$|"
+        r"^P/?N$"
     )),
 ]
 
@@ -166,9 +161,8 @@ _IDENTITY_COMBINED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     )),
 ]
 
-_DRAWING_VALUE_RE = re.compile(
-    r"(?i)^(?:DRD|DCC)?\d{6,}(?:[-./][A-Z0-9]+)*$|"
-    r"(?i)^\d{6,}[-./][A-Z0-9]+(?:[-./][A-Z0-9]+)*$"
+_DRAWING_VALUE_RE = re.compile(r"(?i)^(?:DRD|DCC)?\d{6,}(?:[-./][A-Z0-9]+)*$|"
+    r"^\d{6,}[-./][A-Z0-9]+(?:[-./][A-Z0-9]+)*$"
 )
 # Sheet rev: letter, letter+digit, or 01–99 (not bare 0)
 _REV_VALUE_RE = re.compile(r"^(?:[A-Z]|[A-Z]\d|[1-9]\d?|0[1-9])$")
@@ -223,27 +217,24 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("diameter_O_suffix", re.compile(
         r"(?i)^\d+[.,]\d+\s*O(?:\s*(?:THRU|THROUGH))?(?:\s*\([^)]*\))?$"
     ), "diameter"),
-    ("diameter_dia", re.compile(
-        r"(?i)^(?:DIA|DIAM)\.?\s*\d+(?:[.,]\d+)?"
+    ("diameter_dia", re.compile(r"(?i)^(?:DIA|DIAM)\.?\s*\d+(?:[.,]\d+)?"
         r"(?:\s*[x×]\s*\d+(?:[.,]\d+)?(?:\s*deep)?)?"
         r"(?:\s*holes?(?:-\d+\s*nos)?)?"
         r"(?:\s*\(\s*[x×]?\s*\d+\s*\))?$|"
-        r"(?i)^\d+(?:[.,]\d+)?\s*(?:DIA|DIAM)\.?$"
+        r"^\d+(?:[.,]\d+)?\s*(?:DIA|DIAM)\.?$"
     ), "diameter"),
     ("spherical_dia", re.compile(
         r"(?i)^S[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?$"
     ), "diameter"),
     # Multi-line hole callout kept as one token after merge
-    ("diameter_thru_holes", re.compile(
-        r"(?i)^[Ø⌀φΦ∅]?\s*\d+(?:[.,]\d+)?\s*\(\s*[x×]?\s*\d+\s*\)\s*"
+    ("diameter_thru_holes", re.compile(r"(?i)^[Ø⌀φΦ∅]?\s*\d+(?:[.,]\d+)?\s*\(\s*[x×]?\s*\d+\s*\)\s*"
         r"(?:THRU|THROUGH)\s*HOLES?$|"
-        r"(?i)^[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?\s*\(\s*[x×]?\s*\d+\s*\)\s*"
+        r"^[Ø⌀φΦ∅]\s*\d+(?:[.,]\d+)?\s*\(\s*[x×]?\s*\d+\s*\)\s*"
         r"(?:THRU|THROUGH)\s*HOLES?$"
     ), "diameter"),
     # OD / ID tube callouts (shop fab notes)
-    ("od_id", re.compile(
-        r"(?i)^(?:OD|ID)\s*\d+(?:[.,]\d+)?$|"
-        r"(?i)^OD\s*\d+(?:[.,]\d+)?\s*[x×]\s*ID\s*\d+(?:[.,]\d+)?"
+    ("od_id", re.compile(r"(?i)^(?:OD|ID)\s*\d+(?:[.,]\d+)?$|"
+        r"^OD\s*\d+(?:[.,]\d+)?\s*[x×]\s*ID\s*\d+(?:[.,]\d+)?"
         r"(?:\s*-\s*\d+\s*long)?$"
     ), "diameter"),
     # Bush / pin OD notes on BOM: BUSH DIA-60- …
@@ -291,9 +282,8 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         r"^\d+[.,]\d+\s*\(\s*\d+[.,]\d+\s*\)$"
     ), "linear"),
     # Sheet-metal bend callouts
-    ("bend_radius", re.compile(
-        r"(?i)^BEND\s*R\s*\d+(?:[.,]\d+)?(?:\s*(?:TYP\.?|TYPICAL))?$|"
-        r"(?i)^MIN\s*BEND\s*R(?:ADIUS)?\s*\d+(?:[.,]\d+)?(?:\s*[x×]\s*THK\.?)?$"
+    ("bend_radius", re.compile(r"(?i)^BEND\s*R\s*\d+(?:[.,]\d+)?(?:\s*(?:TYP\.?|TYPICAL))?$|"
+        r"^MIN\s*BEND\s*R(?:ADIUS)?\s*\d+(?:[.,]\d+)?(?:\s*[x×]\s*THK\.?)?$"
     ), "feature"),
     # Knurling / spotface compound notes
     ("knurl", re.compile(
@@ -303,9 +293,8 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         r"(?i)^(?:SF|SPOT\s*FACE|C'?BORE|COUNTERBORE)\b.*\d+(?:[.,]\d+)?.*"
     ), "feature"),
     # Envelope requirement (ISO 8015 / IS 8000)
-    ("envelope_e", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*Ⓔ\s*$|"
-        r"(?i)^Ⓔ\s*\d+(?:[.,]\d+)?$"
+    ("envelope_e", re.compile(r"(?i)^\d+(?:[.,]\d+)?\s*Ⓔ\s*$|"
+        r"^Ⓔ\s*\d+(?:[.,]\d+)?$"
     ), "tolerance"),
     # BOM material thickness notes (vertical BOM columns on Tata A2/A3)
     ("material_thk", re.compile(
@@ -327,22 +316,20 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         r"\d+[x×]\d+[x×]\d+(?:\s*-\s*\d+\s*nos)?$"
     ), "linear"),
     # Undercut / groove shop notes
-    ("undercut", re.compile(
-        r"(?i)^U/?C\s*-?\s*\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*deep$|"
-        r"(?i)^UNDERCUT\s*\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?$|"
-        r"(?i)^GROOVE\s*\d+(?:[.,]\d+)?(?:\s*[x×]\s*\d+(?:[.,]\d+)?)?$"
+    ("undercut", re.compile(r"(?i)^U/?C\s*-?\s*\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*deep$|"
+        r"^UNDERCUT\s*\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?$|"
+        r"^GROOVE\s*\d+(?:[.,]\d+)?(?:\s*[x×]\s*\d+(?:[.,]\d+)?)?$"
     ), "feature"),
 
     # --- BSP / pipe thread (IS 554) BEFORE radius — R 1/4 vs R 10.0 ---
     ("bsp_thread_R", re.compile(
         r"(?i)^R\s*\d+\s*/\s*\d+(?:\"|″)?(?:\s*(?:BSP|BSPT|BSPP))?$"
     ), "thread"),
-    ("bsp_thread_G", re.compile(
-        r"(?i)^(?:G\s*)?\d+(?:/\d+)?(?:\"|″)?\s*(?:BSP|BSPT|BSPP)"
+    ("bsp_thread_G", re.compile(r"(?i)^(?:G\s*)?\d+(?:/\d+)?(?:\"|″)?\s*(?:BSP|BSPT|BSPP)"
         r"(?:\s*[x×]\s*\d+(?:[.,]\d+)?\s*deep)?$|"
-        r"(?i)^\d+\s*/\s*\d+(?:\"|″)?\s*(?:BSP|BSPT|BSPP)"
+        r"^\d+\s*/\s*\d+(?:\"|″)?\s*(?:BSP|BSPT|BSPP)"
         r"(?:\s*[x×]\s*\d+(?:[.,]\d+)?\s*deep)?$|"
-        r"(?i)^G\s*\d+(?:/\d+)?$"
+        r"^G\s*\d+(?:/\d+)?$"
     ), "thread"),
     ("bsp_port_labeled", re.compile(
         r"(?i)^(?:pressure|breather)\s+port\s+size\s*:\s*"
@@ -409,10 +396,9 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
         r"(?:\s*\(\s*[x×X]\s*\d+\s*\))?"
         r"(?:\s*(?:TYP\.?|TYPICAL))?$"
     ), "angle"),
-    ("is_chamfer", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*°"
+    ("is_chamfer", re.compile(r"(?i)^\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*°"
         r"(?:\s*(?:TYP\.?|TYPICAL))?(?:\s*\([^)]*\))?$|"
-        r"(?i)^\d+(?:[.,]\d+)?\s*[x×]\s*45(?:\s*(?:TYP\.?|TYPICAL))?(?:\s*\([^)]*\))?$"
+        r"^\d+(?:[.,]\d+)?\s*[x×]\s*45(?:\s*(?:TYP\.?|TYPICAL))?(?:\s*\([^)]*\))?$"
     ), "chamfer"),
 
     # --- tolerances / limits ---
@@ -434,9 +420,8 @@ _DIMENSION_PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("thickness_t", re.compile(
         r"(?i)^t\s*\d+(?:[.,]\d+)?$"
     ), "feature"),
-    ("depth", re.compile(
-        r"(?i)^\d+(?:[.,]\d+)?\s*DEEP$|"
-        r"(?i)^[↧]\s*\d+(?:[.,]\d+)?$"
+    ("depth", re.compile(r"(?i)^\d+(?:[.,]\d+)?\s*DEEP$|"
+        r"^[↧]\s*\d+(?:[.,]\d+)?$"
     ), "feature"),
     ("hole_thru", re.compile(
         r"(?i)^\d+(?:[.,]\d+)?\s*[Ø⌀φΦ∅O]?\s*(?:THRU|THROUGH)\s*(?:HOLES?)?"
