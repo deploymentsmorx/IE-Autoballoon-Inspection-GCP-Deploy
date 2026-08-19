@@ -29,6 +29,7 @@ steps:
       - "--platform=managed"
       - "--allow-unauthenticated"
       - "--port=9686"
+      - "--min-instances=1"
       - "--set-secrets=JWT_SECRET=JWT_SECRET:latest,PWD_PEPPER=PWD_PEPPER:latest,DATABASE_URL=DATABASE_URL:latest"
     id: deploy-backend
     waitFor: ["push-backend"]

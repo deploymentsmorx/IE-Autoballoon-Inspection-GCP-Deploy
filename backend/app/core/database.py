@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -26,27 +28,40 @@ def _try_connect() -> bool:
     if "channel_binding=" not in url:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}channel_binding=disable"
-    try:
-        eng = create_engine(
-            url,
-            pool_pre_ping=True,
-            pool_size=3,
-            max_overflow=2,
-            pool_recycle=300,
-            connect_args={"connect_timeout": 5},
-        )
-        with eng.connect() as conn:
-            conn.exec_driver_sql("select 1")
-        engine = eng
-        SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-        USE_POSTGRES = True
-        return True
-    except Exception as e:
-        print(f"[smorx] Neon unavailable ({e.__class__.__name__}); using local JSON store.")
-        USE_POSTGRES = False
-        engine = None
-        SessionLocal = None
-        return False
+    # Neon's serverless compute auto-suspends when idle and can take several
+    # seconds to wake on the first connection after a cold start. A single
+    # short-timeout attempt was losing that race on fresh Cloud Run instances
+    # and silently falling back to the ephemeral, per-instance JSON store —
+    # making real accounts/customers look like they'd vanished. Retry with
+    # a generous per-attempt timeout before giving up.
+    attempts = 3
+    last_err: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            eng = create_engine(
+                url,
+                pool_pre_ping=True,
+                pool_size=3,
+                max_overflow=2,
+                pool_recycle=300,
+                connect_args={"connect_timeout": 20},
+            )
+            with eng.connect() as conn:
+                conn.exec_driver_sql("select 1")
+            engine = eng
+            SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+            USE_POSTGRES = True
+            return True
+        except Exception as e:
+            last_err = e
+            if attempt < attempts:
+                time.sleep(2 * attempt)
+
+    print(f"[smorx] Neon unavailable ({last_err.__class__.__name__}); using local JSON store.")
+    USE_POSTGRES = False
+    engine = None
+    SessionLocal = None
+    return False
 
 
 def ensure_commercial_schema() -> None:
