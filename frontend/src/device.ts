@@ -1,3 +1,5 @@
+import { api } from "./api";
+
 const DEVICE_KEY = "smorx_device_id";
 const HOST_KEY = "smorx_hostname";
 const ACTIVATED_KEY = "smorx_license_activated";
@@ -45,6 +47,31 @@ export function markLicenseActivated(payload: {
   if (payload.installation_id) {
     localStorage.setItem("smorx_installation_id", payload.installation_id);
   }
+}
+
+/**
+ * Re-confirm activation with the backend, keyed by the machine's real device ID
+ * (Windows MachineGuid via Tauri) rather than the local flag, which a reinstall
+ * or cleared browser storage can wipe even though the server still has this
+ * device approved. No-op if already activated locally.
+ */
+export async function verifyActivationWithServer(): Promise<boolean> {
+  if (isLicenseActivated()) return true;
+  try {
+    const info = await getDeviceInfo();
+    const status = await api.deviceStatus(info.device_id);
+    if (status.activated) {
+      markLicenseActivated({
+        license_key: status.license_key || "",
+        customer_id: status.customer_id,
+        installation_id: status.installation_id,
+      });
+      return true;
+    }
+  } catch {
+    // Backend unreachable or device unknown — fall through to normal activation flow.
+  }
+  return false;
 }
 
 export async function isDesktopApp(): Promise<boolean> {

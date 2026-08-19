@@ -52,6 +52,12 @@ def change_password(body: ChangePasswordRequest, user: dict = Depends(current_us
     return auth_service.change_password(user["id"], body.current_password, body.new_password)
 
 
+@router.get("/api/auth/device-status")
+def device_status(device_id: str):
+    """Lets the desktop app re-confirm activation after a reinstall wipes its local flag."""
+    return license_service.device_status(device_id)
+
+
 @router.post("/api/auth/activate")
 def activate_license(body: LicenseActivateRequest):
     """First-launch EXE activation: install password + license + user + device details."""

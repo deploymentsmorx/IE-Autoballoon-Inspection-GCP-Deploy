@@ -6,9 +6,34 @@ import ActivatePage from "./pages/ActivatePage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
 import AdminPage from "./pages/AdminPage";
 import InspectionPage from "./pages/InspectionPage";
-import { isDesktopApp, isLicenseActivated } from "./device";
+import { isDesktopApp, isLicenseActivated, verifyActivationWithServer } from "./device";
 
 const LAST_ROUTE_KEY = "smorx_last_route";
+
+/** Runs once at startup: if desktop and not locally marked activated, ask the
+ *  backend whether this machine is already an approved installation before any
+ *  page's synchronous isLicenseActivated() check runs. */
+function ActivationBoot({ children }: { children: React.ReactNode }) {
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      if (await isDesktopApp()) {
+        await verifyActivationWithServer();
+      }
+      setChecked(true);
+    })();
+  }, []);
+
+  if (!checked) {
+    return (
+      <div className="page-center">
+        <div className="muted">Loading…</div>
+      </div>
+    );
+  }
+  return <>{children}</>;
+}
 
 function AuthBoot({ children }: { children: React.ReactNode }) {
   const { ready } = useAuth();
@@ -64,32 +89,34 @@ export default function App() {
   return (
     <AuthProvider>
       <HashRouter>
-        <AuthBoot>
-          <RememberRoute />
-          <Routes>
-            <Route path="/activate" element={<ActivatePage />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/change-password" element={<ChangePasswordPage />} />
-            <Route
-              path="/admin"
-              element={
-                <Private>
-                  <AdminPage />
-                </Private>
-              }
-            />
-            <Route
-              path="/app"
-              element={
-                <Private>
-                  <InspectionPage />
-                </Private>
-              }
-            />
-            <Route path="/" element={<HomeRedirect />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </AuthBoot>
+        <ActivationBoot>
+          <AuthBoot>
+            <RememberRoute />
+            <Routes>
+              <Route path="/activate" element={<ActivatePage />} />
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/change-password" element={<ChangePasswordPage />} />
+              <Route
+                path="/admin"
+                element={
+                  <Private>
+                    <AdminPage />
+                  </Private>
+                }
+              />
+              <Route
+                path="/app"
+                element={
+                  <Private>
+                    <InspectionPage />
+                  </Private>
+                }
+              />
+              <Route path="/" element={<HomeRedirect />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </AuthBoot>
+        </ActivationBoot>
       </HashRouter>
     </AuthProvider>
   );

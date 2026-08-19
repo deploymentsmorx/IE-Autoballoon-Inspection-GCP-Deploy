@@ -14,6 +14,39 @@ from app.models import ApprovedDevice, Customer, Installation, User
 from app.services import auth_service
 
 
+def device_status(device_id: str) -> dict:
+    """
+    Server-side truth for "is this machine already activated?", keyed by the
+    Windows MachineGuid (stable across app reinstalls/updates, unlike the
+    browser localStorage flag the desktop app otherwise relies on).
+    """
+    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
+        return {"activated": False}
+
+    device_id = device_id.strip().upper()
+    if not device_id:
+        return {"activated": False}
+
+    with dbmod.SessionLocal() as db:
+        inst = db.scalar(
+            select(Installation).where(
+                Installation.device_id == device_id,
+                Installation.status == "Active",
+            )
+        )
+        if inst is None:
+            return {"activated": False}
+        customer = db.get(Customer, inst.customer_id)
+        if customer is None or customer.status != "Active":
+            return {"activated": False}
+        return {
+            "activated": True,
+            "license_key": customer.license_key,
+            "customer_id": customer.customer_id,
+            "installation_id": inst.installation_id,
+        }
+
+
 def activate_installation(
     *,
     license_key: str,
