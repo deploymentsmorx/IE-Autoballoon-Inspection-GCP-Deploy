@@ -72,10 +72,23 @@ async function fetchApi(
   ms = 20000,
   operation?: string,
 ): Promise<Response> {
+  // Always retry the currently-pinned base first. Without this, every call restarted
+  // from API_CANDIDATES[0] (the cloud URL), so a single transient blip against the
+  // cloud backend would silently redirect that one request to a local backend
+  // (e.g. a dev server left running on :9686) while later requests went back to
+  // the cloud — splitting one job's requests across two different backends/job stores.
+  const tryOrder = [API, ...API_CANDIDATES.filter((b) => b !== API)];
   let lastErr: unknown = null;
-  for (const base of API_CANDIDATES) {
+  for (const base of tryOrder) {
     try {
       const res = await fetchWithTimeout(`${base}${path}`, init, ms, operation);
+      if (base !== API) {
+        console.warn(
+          `[api] Switched backend from "${API || "(unset)"}" to "${base || "(same-origin)"}" ` +
+            `after a request failed to reach the previous one. Jobs created before this point ` +
+            `will not exist on the new backend.`,
+        );
+      }
       API = base || API;
       return res;
     } catch (e) {
@@ -297,6 +310,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  deviceStatus: (deviceId: string) =>
+    req<{
+      activated: boolean;
+      license_key?: string;
+      customer_id?: string;
+      installation_id?: string;
+    }>(`/api/auth/device-status?device_id=${encodeURIComponent(deviceId)}`),
   changePassword: (current_password: string, new_password: string) =>
     req<{ ok: boolean }>("/api/auth/change-password", {
       method: "POST",
