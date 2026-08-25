@@ -84,6 +84,9 @@ def _cell_text(text) -> str:
     t = str(text or "").strip()
     if not t or t in {"—", "–", "-", "?", "？", "−"}:
         return ""
+    # Keep PDF cells short so layout stays fast on huge reports
+    if len(t) > 48:
+        return t[:45] + "…"
     return t
 
 
@@ -131,7 +134,6 @@ def _draw_title_grid(page: fitz.Page, payload: dict, margin: float, page_w: floa
             x += label_w + val_w + gap
         y += row_h
 
-    # Signature line under Supplier / Authorized Signatory (right column), matching form style
     sig_x0 = margin + label_w + val_w + gap + label_w
     sig_x1 = margin + label_w + val_w + gap + label_w + val_w
     sig_y = y + 10
@@ -149,11 +151,11 @@ def _draw_title_grid(page: fitz.Page, payload: dict, margin: float, page_w: floa
     )
     return (sig_y + 18) - y0 + 8
 
+
 def _measure_cols(payload: dict) -> list[dict]:
     cols = list(payload.get("measure_columns") or [])
     if cols:
         return cols
-    # Legacy fallback: Measured 1/2 from row.measured
     return [
         {"id": "m1", "label": "M1", "values": {}},
         {"id": "m2", "label": "M2", "values": {}},
@@ -161,11 +163,18 @@ def _measure_cols(payload: dict) -> list[dict]:
 
 
 def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
+    """
+    Build inspection report PDF.
+    Optimized for large jobs (thousands of rows): batch cell fills per page
+    and avoid one Shape.commit() per cell.
+    """
     logo_path = logo_path or (STATIC / "smorx-logo-full.png")
     page_w, page_h = 841.89, 595.28  # A4 landscape
     doc = fitz.open()
     rows = payload.get("rows") or []
     measure_cols = _measure_cols(payload)
+    # Pre-resolve measure value maps once (avoid repeated dict lookups)
+    measure_maps = [dict(col.get("values") or {}) for col in measure_cols]
 
     headers = [
         "S.No", "Balloon\nNo.", "Reference", "Nominal", "Tol\n(low)", "Tol\n(high)",
@@ -191,7 +200,7 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
 
     def draw_page_header(page: fitz.Page, first: bool) -> float:
         y = margin
-        if logo_path.exists():
+        if first and logo_path.exists():
             try:
                 page.insert_image(fitz.Rect(margin, y, margin + 150, y + 38), filename=str(logo_path))
             except Exception:
@@ -217,40 +226,48 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
 
     measure_start = 9
     measure_end = 9 + len(measure_cols)
+    n_rows = max(len(rows), 1)
 
-    for start in range(0, max(len(rows), 1), rows_per_page):
+    for start in range(0, n_rows, rows_per_page):
         page = doc.new_page(width=page_w, height=page_h)
         info_h = draw_page_header(page, first=(start == 0))
         y = margin + info_h
         x0 = margin
 
-        # Draw fills first, then text on top (commit-after-text painted cells over labels).
+        # Header row — one shape for all fills
+        shape = page.new_shape()
         x = x0
+        header_rects: list[fitz.Rect] = []
         for i, h in enumerate(headers):
             r = fitz.Rect(x, y, x + col_w[i], y + header_h)
-            shape = page.new_shape()
+            header_rects.append(r)
             shape.draw_rect(r)
-            shape.finish(color=C_BORDER, fill=C_HEADER, width=0.5)
-            shape.commit()
+            x += col_w[i]
+        shape.finish(color=C_BORDER, fill=C_HEADER, width=0.5)
+        shape.commit()
+        for i, h in enumerate(headers):
             page.insert_textbox(
-                r + (2, 4, -2, -2),
+                header_rects[i] + (2, 4, -2, -2),
                 h,
                 fontsize=7,
                 fontname="hebo",
                 color=C_TEXT,
                 align=1,
             )
-            x += col_w[i]
         y += header_h
 
-        chunk = rows[start : start + rows_per_page]
+        chunk = rows[start : start + rows_per_page] if rows else [{}]
+        # Batch fills: group cells by fill color, one finish() per color group
+        fill_groups: dict[tuple[float, float, float], list[fitz.Rect]] = {}
+        text_jobs: list[tuple[fitz.Rect, str]] = []
+
         for ri, row in enumerate(chunk):
             measured = list(row.get("measured") or [])
-            bkey = str(row.get("balloon"))
+            bkey = str(row.get("balloon", ""))
             measure_vals = []
             statuses = []
-            for ci, col in enumerate(measure_cols):
-                val = (col.get("values") or {}).get(bkey, "")
+            for ci, mmap in enumerate(measure_maps):
+                val = mmap.get(bkey, "")
                 if not val and ci < len(measured):
                     val = measured[ci] or ""
                 measure_vals.append(val)
@@ -286,25 +303,33 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
                     st = statuses[i - measure_start]
                     if st != "empty":
                         fill = _status_color(st)
-                shape = page.new_shape()
-                shape.draw_rect(r)
-                shape.finish(color=C_BORDER, fill=fill, width=0.35)
-                shape.commit()
+                fill_groups.setdefault(fill, []).append(r)
                 display = _cell_text(cell)
                 if display:
-                    page.insert_textbox(
-                        r + (1, 3, -1, -1),
-                        display,
-                        fontsize=7,
-                        fontname="helv",
-                        color=C_TEXT,
-                        align=1,
-                    )
+                    text_jobs.append((r, display))
                 x += col_w[i]
             y += row_h
 
+        for fill, rects in fill_groups.items():
+            shape = page.new_shape()
+            for r in rects:
+                shape.draw_rect(r)
+            shape.finish(color=C_BORDER, fill=fill, width=0.35)
+            shape.commit()
+
+        for r, display in text_jobs:
+            # insert_text is faster than textbox for short centered-ish values
+            page.insert_text(
+                fitz.Point(r.x0 + 2, r.y0 + 12),
+                display,
+                fontsize=7,
+                fontname="helv",
+                color=C_TEXT,
+            )
+
     buf = io.BytesIO()
-    doc.save(buf, deflate=True, garbage=3)
+    # garbage=1 is much faster than 3 on 80+ page reports
+    doc.save(buf, deflate=True, garbage=1)
     doc.close()
     return buf.getvalue()
 

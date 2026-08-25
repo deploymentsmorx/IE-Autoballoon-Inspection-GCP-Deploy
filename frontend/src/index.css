@@ -203,7 +203,12 @@ input, select, button, textarea { font: inherit; }
 }
 .viewer-hint {
   font-size: 0.75rem;
+  white-space: nowrap;
   margin-left: 6px;
+}
+/* Hide zoom/pan hint text; keep Saving… visible */
+.viewer-toolbar .viewer-hint:not(.saving-hint) {
+  display: none;
 }
 .viewer-body {
   flex: 1;
@@ -278,6 +283,21 @@ input, select, button, textarea { font: inherit; }
   padding: 2px 4px 2px 8px;
 }
 .balloon-list-item.selected { border-color: #3d7eff; }
+.balloon-list-item.marked-delete { border-color: #ff7043; background: rgba(255,112,67,0.12); }
+.balloon-list-check {
+  width: 14px;
+  height: 14px;
+  margin: 0 2px 0 4px;
+  cursor: pointer;
+  accent-color: #ff7043;
+}
+.balloon-list-hint {
+  width: 100%;
+  flex-basis: 100%;
+  font-size: 0.72rem;
+  color: var(--muted);
+  padding: 0 4px 4px;
+}
 .balloon-list-pick {
   background: transparent;
   border: 0;

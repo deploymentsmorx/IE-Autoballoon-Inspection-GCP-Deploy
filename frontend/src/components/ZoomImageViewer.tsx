@@ -169,7 +169,6 @@ export default function ZoomImageViewer({ imageUrl }: Props) {
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => setZoomAround(1)}>
           100%
         </button>
-        <span className="muted viewer-hint">Wheel = zoom · Drag = pan</span>
       </div>
       <div ref={wrapRef} className="panel-body canvas-wrap viewer-body">
         {loading || (!imgRef.current && ready === 0 && !failed) ? (

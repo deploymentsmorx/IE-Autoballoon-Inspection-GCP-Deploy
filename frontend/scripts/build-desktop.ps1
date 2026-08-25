@@ -25,5 +25,17 @@ npx tauri build --no-bundle
 $exe = Join-Path $env:CARGO_TARGET_DIR "release\autoballoon.exe"
 $outDir = Join-Path $Root "dist-desktop"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-Copy-Item $exe (Join-Path $outDir "AutoBalloon.exe") -Force
-Write-Host "Built: $(Join-Path $outDir 'AutoBalloon.exe')"
+$dest = Join-Path $outDir "AutoBalloon.exe"
+try {
+  Copy-Item $exe $dest -Force
+  Write-Host "Built: $dest"
+} catch {
+  $alt = Join-Path $outDir "AutoBalloon.new.exe"
+  Copy-Item $exe $alt -Force
+  Write-Host ""
+  Write-Host "Built: $exe" -ForegroundColor Green
+  Write-Host "Could not overwrite $dest (app is running)." -ForegroundColor Yellow
+  Write-Host "Saved as: $alt" -ForegroundColor Yellow
+  Write-Host "Close AutoBalloon, then run:" -ForegroundColor Yellow
+  Write-Host "  Copy-Item '$alt' '$dest' -Force" -ForegroundColor Cyan
+}

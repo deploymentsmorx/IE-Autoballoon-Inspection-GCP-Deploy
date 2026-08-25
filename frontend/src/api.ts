@@ -1,15 +1,15 @@
 const ENV_API = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") || "";
+const LOCAL_API_FALLBACKS = ["http://127.0.0.1:9686", "http://localhost:9686"];
+const isLocalApiUrl = (url: string) => /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(url);
 /** In Vite dev, prefer same-origin `/api` (proxied to 9686) to avoid CORS / false "unreachable". */
 const API_CANDIDATES = Array.from(
   new Set(
     [
       ...(import.meta.env.DEV ? [""] : []),
       ENV_API,
-      "http://127.0.0.1:9686",
-      "http://localhost:9686",
-    ].filter((b) => b !== undefined && b !== null && (b === "" || Boolean(b))),
-  ),
-);
+      // Packaged cloud EXE must not fall back to localhost — JWT secrets differ → "Invalid token".
+      ...(import.meta.env.DEV || !ENV_API || isLocalApiUrl(ENV_API) ? LOCAL_API_FALLBACKS : []),
+    ].filter((b) => b !== undefined && b !== null && (b === "" || Boolean(b)))));
 let API = API_CANDIDATES[0] || "http://127.0.0.1:9686";
 
 function authToken(): string {
@@ -34,93 +34,54 @@ function apiUnreachableMessage(detail?: string) {
   return `Cannot reach API at ${where}${extra}. Start backend first: backend\\start-api.bat (port 9686), keep that window open, then try again.`;
 }
 
-function timeoutMessage(ms: number, operation?: string) {
-  const sec = Math.round(ms / 1000);
-  const op = operation ? ` (${operation})` : "";
-  return (
-    `Request timed out after ${sec}s${op}. ` +
-    `The backend did not respond in time — usually the drawing is still processing or the API stopped. ` +
-    `Keep backend\\start-api.bat open and watch that window for errors. ` +
-    `Large drawings often finish in 1–3 minutes; if it keeps timing out, restart the API and try again.`
-  );
+/** Wait until the server finishes — no client-side request timeout. */
+async function fetchNoTimeout(url: string, init: RequestInit = {}): Promise<Response> {
+  return await fetch(url, init);
 }
 
-/** Fail fast when the API is down (avoids endless "Loading…" in the EXE). */
-async function fetchWithTimeout(
-  url: string,
-  init: RequestInit = {},
-  ms = 20000,
-  operation?: string,
-): Promise<Response> {
-  const ctrl = new AbortController();
-  const timer = window.setTimeout(() => ctrl.abort(), ms);
-  try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
-  } catch (e) {
-    if (e instanceof DOMException && e.name === "AbortError") {
-      throw new Error(timeoutMessage(ms, operation));
-    }
-    throw e;
-  } finally {
-    window.clearTimeout(timer);
-  }
-}
-
-async function fetchApi(
-  path: string,
-  init: RequestInit = {},
-  ms = 20000,
-  operation?: string,
-): Promise<Response> {
+async function fetchApi(path: string, init: RequestInit = {}): Promise<Response> {
   // Always retry the currently-pinned base first. Without this, every call restarted
   // from API_CANDIDATES[0] (the cloud URL), so a single transient blip against the
   // cloud backend would silently redirect that one request to a local backend
   // (e.g. a dev server left running on :9686) while later requests went back to
   // the cloud — splitting one job's requests across two different backends/job stores.
-  const tryOrder = [API, ...API_CANDIDATES.filter((b) => b !== API)];
+  // Never hop backends once logged in — tokens are signed per-server (JWT secret).
+  const tryOrder = authToken()
+    ? [API]
+    : [API, ...API_CANDIDATES.filter((b) => b !== API)];
   let lastErr: unknown = null;
   for (const base of tryOrder) {
     try {
-      const res = await fetchWithTimeout(`${base}${path}`, init, ms, operation);
+      const res = await fetchNoTimeout(`${base}${path}`, init);
       if (base !== API) {
         console.warn(
           `[api] Switched backend from "${API || "(unset)"}" to "${base || "(same-origin)"}" ` +
             `after a request failed to reach the previous one. Jobs created before this point ` +
-            `will not exist on the new backend.`,
-        );
+            `will not exist on the new backend.`);
       }
       API = base || API;
       return res;
     } catch (e) {
       lastErr = e;
-      const msg = e instanceof Error ? e.message : String(e || "");
-      // Do not retry other hosts after a timeout — the server may still be working,
-      // and a second balloon/audit request would make things worse.
-      if (msg.includes("timed out")) {
-        throw e;
-      }
     }
   }
-  if (lastErr instanceof Error) {
-    if (lastErr.message.includes("timed out") || lastErr.message.includes("Cannot reach API")) {
-      throw lastErr;
-    }
+  if (lastErr instanceof Error && lastErr.message.includes("Cannot reach API")) {
+    throw lastErr;
   }
   throw new Error(apiUnreachableMessage());
 }
 
-async function req<T>(path: string, init: RequestInit & { timeoutMs?: number; operation?: string } = {}): Promise<T> {
-  const { timeoutMs, operation, ...rest } = init;
+async function req<T>(path: string, init: RequestInit & { operation?: string } = {}): Promise<T> {
+  const { operation: _operation, ...rest } = init;
   const headers = {
     ...(rest.headers || {}),
-    ...authHeaders(),
-  } as Record<string, string>;
+    ...authHeaders()} as Record<string, string>;
   if (rest.body && !(rest.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
   let res: Response;
   try {
-    res = await fetchApi(path, { ...rest, headers }, timeoutMs ?? 20000, operation);
+    res = await fetchApi(path, { ...rest, headers });
   } catch (e) {
     rethrowFetchError(e);
   }
@@ -142,11 +103,7 @@ async function req<T>(path: string, init: RequestInit & { timeoutMs?: number; op
 
 function rethrowFetchError(e: unknown): never {
   const msg = e instanceof Error ? e.message : String(e || "");
-  if (
-    msg.includes("timed out") ||
-    msg.includes("Cannot reach API") ||
-    msg.includes("Save cancelled")
-  ) {
+  if (msg.includes("Cannot reach API") || msg.includes("Save cancelled")) {
     throw new Error(msg);
   }
   if (
@@ -165,22 +122,20 @@ function rethrowFetchError(e: unknown): never {
 /** Fetch a file as Blob (Bearer + clearer errors). */
 async function fetchBlob(
   pathOrUrl: string,
-  init: RequestInit & { timeoutMs?: number } = {},
-): Promise<Blob> {
-  const { timeoutMs = 180000, ...rest } = init;
+  init: RequestInit = {}): Promise<Blob> {
+  const rest = init;
   const headers = {
     ...(rest.headers || {}),
-    ...authHeaders(),
-  } as Record<string, string>;
+    ...authHeaders()} as Record<string, string>;
   if (rest.body && !(rest.body instanceof FormData) && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
   let res: Response;
   try {
     if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
-      res = await fetchWithTimeout(pathOrUrl, { ...rest, headers }, timeoutMs);
+      res = await fetchNoTimeout(pathOrUrl, { ...rest, headers });
     } else {
-      res = await fetchApi(pathOrUrl, { ...rest, headers }, timeoutMs);
+      res = await fetchApi(pathOrUrl, { ...rest, headers });
     }
   } catch (e) {
     rethrowFetchError(e);
@@ -246,11 +201,8 @@ async function saveBlob(blob: Blob, filename: string): Promise<string> {
             accept: {
               "application/pdf": [".pdf"],
               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
-              "application/octet-stream": [".*"],
-            },
-          },
-        ],
-      });
+              "application/octet-stream": [".*"]}},
+        ]});
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
@@ -280,8 +232,7 @@ export const api = {
   login: (username: string, password: string) =>
     req<{ token: string; user: User }>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
-    }),
+      body: JSON.stringify({ username, password })}),
   activate: (body: {
     license_key: string;
     username: string;
@@ -308,8 +259,7 @@ export const api = {
       user: { id: string; username: string; role: string; must_change_password?: boolean };
     }>("/api/auth/activate", {
       method: "POST",
-      body: JSON.stringify(body),
-    }),
+      body: JSON.stringify(body)}),
   deviceStatus: (deviceId: string) =>
     req<{
       activated: boolean;
@@ -320,8 +270,7 @@ export const api = {
   changePassword: (current_password: string, new_password: string) =>
     req<{ ok: boolean }>("/api/auth/change-password", {
       method: "POST",
-      body: JSON.stringify({ current_password, new_password }),
-    }),
+      body: JSON.stringify({ current_password, new_password })}),
   me: () => req<User>("/api/auth/me"),
   listCustomers: () => req<Customer[]>("/api/admin/customers"),
   createCustomer: (body: {
@@ -339,27 +288,22 @@ export const api = {
       install_password: string;
       require_device_approval: boolean;
       org_id: string;
-    }>,
-  ) =>
+    }>) =>
     req<Customer>(`/api/admin/customers/${customerId}`, {
       method: "PATCH",
-      body: JSON.stringify(body),
-    }),
+      body: JSON.stringify(body)}),
   listApprovedDevices: (customerId: string) =>
     req<ApprovedDevice[]>(`/api/admin/customers/${customerId}/devices`),
   addApprovedDevice: (customerId: string, device_id: string, hostname: string) =>
     req<ApprovedDevice>(`/api/admin/customers/${customerId}/devices`, {
       method: "POST",
-      body: JSON.stringify({ device_id, hostname }),
-    }),
+      body: JSON.stringify({ device_id, hostname })}),
   deleteApprovedDevice: (customerId: string, deviceRowId: string) =>
     req<{ ok: boolean }>(`/api/admin/customers/${customerId}/devices/${deviceRowId}`, {
-      method: "DELETE",
-    }),
+      method: "DELETE"}),
   listInstallations: (customerId?: string) =>
     req<Installation[]>(
-      `/api/admin/installations${customerId ? `?customer_id=${encodeURIComponent(customerId)}` : ""}`,
-    ),
+      `/api/admin/installations${customerId ? `?customer_id=${encodeURIComponent(customerId)}` : ""}`),
   deleteEngineer: (userId: string) =>
     req<{ ok: boolean }>(`/api/admin/engineers/${userId}`, { method: "DELETE" }),
   listOrgs: () => req<Org[]>("/api/admin/organizations"),
@@ -375,8 +319,7 @@ export const api = {
   }) =>
     req<{ id: string; username: string; email: string; temp_password?: string }>(
       "/api/admin/engineers",
-      { method: "POST", body: JSON.stringify(body) },
-    ),
+      { method: "POST", body: JSON.stringify(body) }),
   updateAccess: (body: {
     user_id: string;
     active: boolean;
@@ -396,15 +339,12 @@ export const api = {
       message?: string;
     }>("/api/jobs/upload", {
       method: "POST",
-      body: fd,
-      timeoutMs: 120000,
-    });
+      body: fd});
   },
   runBalloon: (jobId: string, fileIndex = 0) =>
     req<{ count: number; balloons: Balloon[]; pass_log: unknown[]; page_count?: number }>(
-      `/api/jobs/${jobId}/balloon?file_index=${fileIndex}&passes=2&use_tiles=true`,
-      { method: "POST", timeoutMs: 900000, operation: "Run auto ballooning" },
-    ),
+      `/api/jobs/${jobId}/balloon?file_index=${fileIndex}&passes=1&use_tiles=true`,
+      { method: "POST" }),
   auditCrosscheck: (jobId: string, fileIndex = 0) =>
     req<{
       before: number;
@@ -415,48 +355,43 @@ export const api = {
       balloons: Balloon[] | null;
       pass_log: unknown[];
     }>(`/api/jobs/${jobId}/audit?file_index=${fileIndex}&rounds=2&apply=true`, {
-      method: "POST",
-      timeoutMs: 900000,
-      operation: "Audit / Cross-check",
-    }),
+      method: "POST"}),
   addMissingDims: (jobId: string, items: MissingDim[]) =>
     req<{ count: number; balloons: Balloon[]; missing_count: number; missing: MissingDim[] }>(
       `/api/jobs/${jobId}/audit/add-missing`,
-      { method: "POST", body: JSON.stringify({ items }) },
-    ),
+      { method: "POST", body: JSON.stringify({ items }) }),
   getJob: (jobId: string, page = 0) => req<Job>(`/api/jobs/${jobId}?page=${page}`),
-  saveBalloons: (jobId: string, balloons: Balloon[]) =>
-    req<{ count: number; balloons: Balloon[] }>(`/api/jobs/${jobId}/balloons`, {
-      method: "PUT",
-      body: JSON.stringify({ balloons }),
-      timeoutMs: 180000,
-    }),
+  saveBalloons: (jobId: string, balloons: Balloon[], opts?: { redrawPdf?: boolean }) =>
+    req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(
+      `/api/jobs/${jobId}/balloons?redraw_pdf=${opts?.redrawPdf !== false}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ balloons })}),
   createBalloon: async (
     jobId: string,
-    data: { page: number; text: string; x: number; y: number; width?: number; height?: number },
-  ) => {
-    const fd = new FormData();
-    fd.append("page", String(data.page));
-    fd.append("text", data.text);
-    fd.append("x", String(data.x));
-    fd.append("y", String(data.y));
-    fd.append("width", String(data.width ?? 24));
-    fd.append("height", String(data.height ?? 14));
-    return req(`/api/jobs/${jobId}/balloons/create`, { method: "POST", body: fd });
-  },
+    data: { page: number; text: string; x: number; y: number; width?: number; height?: number }) =>
+    req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(`/api/jobs/${jobId}/balloons/create`, {
+      method: "POST",
+      body: (() => {
+        const fd = new FormData();
+        fd.append("page", String(data.page));
+        fd.append("text", data.text);
+        fd.append("x", String(data.x));
+        fd.append("y", String(data.y));
+        fd.append("width", String(data.width ?? 24));
+        fd.append("height", String(data.height ?? 14));
+        return fd;
+      })()}),
   deleteBalloon: (jobId: string, no: number) =>
-    req(`/api/jobs/${jobId}/balloons/${no}`, { method: "DELETE" }),
-  saveReport: (jobId: string, payload: ReportPayload) =>
-    req(`/api/jobs/${jobId}/report`, {
+    req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(`/api/jobs/${jobId}/balloons/${no}`, {
+      method: "DELETE"}),
+  saveReport: (jobId: string, payload: ReportPayload, opts?: { localOnly?: boolean }) =>
+    req(`/api/jobs/${jobId}/report?local_only=${opts?.localOnly ? "true" : "false"}`, {
       method: "PUT",
-      body: JSON.stringify(payload),
-      timeoutMs: 90000,
-      operation: "Save report",
-    }),
+      body: JSON.stringify(payload)}),
   rebuildReport: (jobId: string) =>
     req<{ count: number; rows: ReportRow[] }>(`/api/jobs/${jobId}/report/rebuild`, {
-      method: "POST",
-    }),
+      method: "POST"}),
   extractTitle: (jobId: string) =>
     req<{
       part_number: string;
@@ -471,7 +406,7 @@ export const api = {
       supplier_name: string;
       customer_name: string;
       authorized_signatory: string;
-    }>(`/api/jobs/${jobId}/title-extract`, { method: "POST", timeoutMs: 120000 }),
+    }>(`/api/jobs/${jobId}/title-extract`, { method: "POST"}),
   previewInputUrl: (jobId: string, page = 0, rev = 0) =>
     `${API}/api/jobs/${jobId}/preview/input?page=${page}&v=${rev}`,
   previewBalloonUrl: (jobId: string, page = 0, rev = 0) =>
@@ -482,30 +417,14 @@ export const api = {
     withAuthQuery(`/api/jobs/${jobId}/download/source`),
   downloadReportPdf: (jobId: string) => withAuthQuery(`/api/jobs/${jobId}/report/pdf`),
   downloadExcel: (jobId: string) => withAuthQuery(`/api/jobs/${jobId}/report/excel`),
-  /** Save report fields and download the PDF in one API call. */
+  /**
+   * Save report locally, then download PDF via GET.
+   * Avoids posting thousands of rows through the desktop bridge (which froze the UI).
+   */
   downloadReportPdfFile: async (jobId: string, payload: ReportPayload, suggestedName?: string) => {
     const filename = suggestedName || `${jobId}_inspection_report.pdf`;
-    if (await isDesktopApp()) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const token = authToken();
-      const savedPath = await invoke<string>("download_post", {
-        url: `${API}/api/jobs/${jobId}/report/pdf`,
-        filename,
-        authorization: token ? `Bearer ${token}` : null,
-        body: JSON.stringify(payload),
-      });
-      if (!savedPath) throw new Error("Save returned no path");
-      return savedPath;
-    }
-    const blob = await fetchBlob(`/api/jobs/${jobId}/report/pdf`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-      timeoutMs: 180000,
-    });
-    if (!blob || blob.size === 0) {
-      throw new Error("Report PDF was empty — save report data and try again.");
-    }
-    return saveBlob(blob, filename);
+    await api.saveReport(jobId, payload, { localOnly: true });
+    return api.downloadFile(api.downloadReportPdf(jobId), filename);
   },
   authFetch: fetchBlob,
   /** Download API file to disk (Save dialog on desktop when available). */
@@ -516,18 +435,16 @@ export const api = {
       const savedPath = await invoke<string>("download_url", {
         url,
         filename,
-        authorization: token ? `Bearer ${token}` : null,
-      });
+        authorization: token ? `Bearer ${token}` : null});
       if (!savedPath) throw new Error("Save returned no path");
       return savedPath;
     }
-    const blob = await fetchBlob(url, { timeoutMs: 180000 });
+    const blob = await fetchBlob(url);
     if (!blob || blob.size === 0) {
       throw new Error("Download returned an empty file — run auto ballooning / rebuild report first.");
     }
     return saveBlob(blob, filename);
-  },
-};
+  }};
 
 export type User = {
   id: string;
@@ -604,6 +521,11 @@ export type Balloon = {
   pattern?: string;
   bx?: number | null;
   by?: number | null;
+  /** Arrow tip (PDF space). When unset, leader joins dim centre. */
+  tx?: number | null;
+  ty?: number | null;
+  /** Arrowhead size scale (1 = default). */
+  arrow_size?: number | null;
 };
 
 export type MissingDim = {
@@ -699,8 +621,7 @@ export function measureStatus(
   nominal: string,
   tolLow: string,
   tolHigh: string,
-  measured: string,
-): "green" | "yellow" | "red" | "empty" {
+  measured: string): "green" | "yellow" | "red" | "empty" {
   const num = (s: string) => {
     const m = String(s || "").match(/[-+]?\d*\.?\d+/);
     return m ? parseFloat(m[0]) : null;

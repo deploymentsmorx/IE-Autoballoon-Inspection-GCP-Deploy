@@ -491,6 +491,11 @@ class Characteristic:
     # keeps the circle here instead of re-running placement.
     bx: float | None = None
     by: float | None = None
+    # Arrow tip in PDF space (defaults to dim centre when unset).
+    tx: float | None = None
+    ty: float | None = None
+    # Arrowhead scale (1.0 = default).
+    arrow_size: float | None = None
 
 
 def _pattern_family(pattern_name: str | None) -> str:
@@ -2793,22 +2798,34 @@ def detect_dimensions_multipass(
 
         # After each recovery pass (and once after pass 1), tile the drawing zone
         if use_tiles and (i == 0 or len(added) > 0):
-            tile_level = min(5, level + 1)
-            # Denser virtual-zoom tiles (clip regions) — improves recall on
-            # crowded vector sheets without raster OCR.
-            rows, cols = (4, 6) if i == 0 else (5, 7)
-            tiled = detect_dimensions_tiled(
-                doc, level=tile_level, already=accumulated, rows=rows, cols=cols,
-            )
-            if tiled:
-                accumulated = _renumber(accumulated + tiled)
+            # Dense vector sheets: full-page pass already finds most dims. Running
+            # 24+ tile clips on large A0/A1 pages can take 7–15+ minutes while
+            # adding only a few extras — skip to keep ballooning responsive.
+            if i == 0 and len(accumulated) >= 65:
                 log.append({
                     "pass": i + 1,
-                    "level": tile_level,
-                    "added": len(tiled),
+                    "level": 0,
+                    "added": 0,
                     "total": len(accumulated),
-                    "mode": "tiles",
+                    "mode": "tiles_skipped_dense",
                 })
+            else:
+                tile_level = min(5, level + 1)
+                # Denser virtual-zoom tiles (clip regions) — improves recall on
+                # crowded vector sheets without raster OCR.
+                rows, cols = (4, 6) if i == 0 else (5, 7)
+                tiled = detect_dimensions_tiled(
+                    doc, level=tile_level, already=accumulated, rows=rows, cols=cols,
+                )
+                if tiled:
+                    accumulated = _renumber(accumulated + tiled)
+                    log.append({
+                        "pass": i + 1,
+                        "level": tile_level,
+                        "added": len(tiled),
+                        "total": len(accumulated),
+                        "mode": "tiles",
+                    })
 
         # After the opening pass, stop when recovery finds nothing new —
         # but always finish with one dense slice/cutter sweep first.
@@ -2829,7 +2846,7 @@ def detect_dimensions_multipass(
             break
 
         # Final slice/cutter sweep on last planned pass
-        if use_tiles and i == passes - 1:
+        if use_tiles and i == passes - 1 and len(accumulated) < 65:
             sliced = detect_dimensions_slice_cutter(
                 doc, already=accumulated, rows=5, cols=7, level=min(5, level + 1),
             )
@@ -3646,9 +3663,10 @@ def draw_balloons(
         for c, cx, cy, r in placed:
             c.bx = cx
             c.by = cy
-            # Dimension target (leader tip)
-            tx = c.x + c.width / 2.0
-            ty = c.y + c.height / 2.0
+            # Dimension target (leader tip) — custom tx/ty in edit saves, else dim centre
+            tx = float(c.tx) if c.tx is not None else c.x + c.width / 2.0
+            ty = float(c.ty) if c.ty is not None else c.y + c.height / 2.0
+            arrow_scale = float(c.arrow_size) if c.arrow_size is not None else 1.0
 
             # Leader starts at balloon rim toward the text
             dx, dy = tx - cx, ty - cy
@@ -3664,7 +3682,7 @@ def draw_balloons(
             shape.finish(color=color, width=0.9, stroke_opacity=1)
 
             # Arrowhead
-            tip_p, left, right = _arrowhead(tip, start, size=max(3.2, r * 0.55))
+            tip_p, left, right = _arrowhead(tip, start, size=max(2.2, r * 0.38 * arrow_scale))
             shape.draw_polyline([left, tip_p, right])
             shape.finish(color=color, fill=color, width=0.4, closePath=True)
 

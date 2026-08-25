@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 import fitz
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from app.api.dependencies import require_perm
@@ -82,6 +82,11 @@ def _save_meta(job_id: str, meta: dict) -> None:
         except Exception:
             pass
 
+
+def _save_meta_local(job_id: str, meta: dict) -> None:
+    """Write meta.json only — skip S3/Neon (used for large report PDF path)."""
+    jd = _job_dir(job_id)
+    (jd / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
 def _renumber(balloons: list[dict], *, compact: bool = False) -> list[dict]:
     """
@@ -259,6 +264,28 @@ def _image_to_pdf(image_path: Path, pdf_path: Path) -> None:
         pdf.close()
 
 
+def _merge_pdfs(pdf_paths: list[Path], out_path: Path) -> int:
+    """Combine multiple PDFs into one file; return total page count."""
+    if not pdf_paths:
+        raise ValueError("No PDFs to merge")
+    if len(pdf_paths) == 1:
+        if pdf_paths[0].resolve() != out_path.resolve():
+            shutil.copy2(pdf_paths[0], out_path)
+        return _pdf_page_count(out_path)
+    merged = fitz.open()
+    try:
+        for p in pdf_paths:
+            src = fitz.open(p)
+            try:
+                merged.insert_pdf(src)
+            finally:
+                src.close()
+        merged.save(str(out_path), deflate=True, garbage=3)
+        return max(1, len(merged))
+    finally:
+        merged.close()
+
+
 def _copy_image_preview(image_path: Path, out_png: Path, max_side: int = 2400) -> None:
     """Save an image as the input preview PNG (optionally downscaled)."""
     doc = fitz.open(image_path)
@@ -352,6 +379,48 @@ def _ocr_enrich_pdf(pdf_path: Path) -> bool:
             pass
     return False
 
+def _default_balloon_leader(x: float, y: float, width: float, height: float) -> tuple[float, float]:
+    """Fast leader placement — matches frontend BalloonCanvas fallback."""
+    tip_x = x + width / 2.0
+    tip_y = y + height / 2.0
+    offset = max(28.0, height * 3.2)
+    return tip_x - offset, tip_y
+
+
+def _ensure_balloon_leaders(balloons: list[dict]) -> list[dict]:
+    """Fill missing bx/by without opening the full PDF overlay pass."""
+    out: list[dict] = []
+    for b in balloons:
+        nb = dict(b)
+        if nb.get("bx") is None or nb.get("by") is None:
+            bx, by = _default_balloon_leader(
+                float(nb["x"]),
+                float(nb["y"]),
+                float(nb.get("width") or 20),
+                float(nb.get("height") or 12),
+            )
+            nb["bx"] = bx
+            nb["by"] = by
+        out.append(nb)
+    return out
+
+
+def _regenerate_balloon_pdf(job_id: str, meta: dict) -> list[dict]:
+    """Redraw ballooned PDF from meta; returns updated balloons with refined bx/by."""
+    jd = _job_dir(job_id)
+    idx = int(meta.get("active_file") or 0)
+    files = meta.get("files") or []
+    src = jd / files[idx]["path"]
+    balloons = list(meta.get("balloons") or [])
+    out_pdf = jd / f"ballooned_{idx}.pdf"
+    balloons = _draw_balloons_overlay(src, balloons, out_pdf)
+    _render_preview(out_pdf, jd / "balloon_preview.png", 0)
+    meta["balloons"] = balloons
+    meta["balloon_pdf_stale"] = False
+    _save_meta(job_id, meta)
+    return balloons
+
+
 def _draw_balloons_overlay(src_pdf: Path, balloons: list[dict], out_pdf: Path) -> list[dict]:
     """Draw balloons onto a copy of the source PDF; return balloons with bx/by filled."""
     from app.services.autoballoon_engine import Characteristic, draw_balloons
@@ -376,6 +445,9 @@ def _draw_balloons_overlay(src_pdf: Path, balloons: list[dict], out_pdf: Path) -
                     family="",
                     bx=float(bx) if bx is not None else None,
                     by=float(by) if by is not None else None,
+                    tx=float(b["tx"]) if b.get("tx") is not None else None,
+                    ty=float(b["ty"]) if b.get("ty") is not None else None,
+                    arrow_size=float(b["arrow_size"]) if b.get("arrow_size") is not None else None,
                 )
             )
         out = draw_balloons(doc, chars)
@@ -389,6 +461,9 @@ def _draw_balloons_overlay(src_pdf: Path, balloons: list[dict], out_pdf: Path) -
             nb = dict(b)
             nb["bx"] = c.bx
             nb["by"] = c.by
+            nb["tx"] = c.tx
+            nb["ty"] = c.ty
+            nb["arrow_size"] = c.arrow_size
             updated.append(nb)
         return updated
     finally:
@@ -400,6 +475,11 @@ async def upload_pdfs(
     files: list[UploadFile] = File(...),
     user: dict = Depends(require_perm("write")),
 ):
+    """
+    Upload one or more PDF/image drawings.
+    Multiple files are merged into a single combined PDF so ballooning
+    and download cover every page in one job.
+    """
     accepted = [
         f
         for f in files
@@ -412,40 +492,64 @@ async def upload_pdfs(
         )
     job_id = secrets.token_hex(6)
     jd = _job_dir(job_id)
-    saved = []
+
+    # Convert each upload to a PDF part, then merge into one source file.
+    part_pdfs: list[Path] = []
+    source_names: list[str] = []
+    any_image = False
+    first_image_path: str | None = None
+
     for i, f in enumerate(accepted):
         name = Path(f.filename or f"drawing_{i}").name
+        source_names.append(name)
         raw_dest = jd / f"upload_{i}_{name}"
         with raw_dest.open("wb") as out:
             shutil.copyfileobj(f.file, out)
 
-        kind = "image" if _is_image(name) else "pdf"
-        if kind == "image":
-            pdf_name = f"source_{i}_{Path(name).stem}.pdf"
-            pdf_dest = jd / pdf_name
-            _image_to_pdf(raw_dest, pdf_dest)
-            saved.append({
-                "index": i,
-                "name": name,
-                "path": pdf_dest.name,
-                "kind": "image",
-                "image_path": raw_dest.name,
-                "page_count": 1,
-            })
+        if _is_image(name):
+            any_image = True
+            part = jd / f"part_{i}_{Path(name).stem}.pdf"
+            _image_to_pdf(raw_dest, part)
+            if first_image_path is None:
+                first_image_path = raw_dest.name
+            part_pdfs.append(part)
         else:
-            pdf_dest = jd / f"source_{i}_{name}"
-            if raw_dest != pdf_dest:
-                shutil.move(str(raw_dest), str(pdf_dest))
-            pages = _pdf_page_count(pdf_dest)
-            saved.append({
-                "index": i,
-                "name": name,
-                "path": pdf_dest.name,
-                "kind": "pdf",
-                "page_count": pages,
-            })
+            part = jd / f"part_{i}_{name}"
+            if raw_dest != part:
+                shutil.move(str(raw_dest), str(part))
+            part_pdfs.append(part)
 
-    page_count = int(saved[0].get("page_count") or 1) if saved else 1
+    if len(source_names) == 1 and _is_pdf(source_names[0]):
+        combined_name = source_names[0]
+    elif len(source_names) == 1:
+        combined_name = f"{Path(source_names[0]).stem}.pdf"
+    else:
+        stem = Path(source_names[0]).stem
+        combined_name = f"{stem}_plus_{len(source_names) - 1}_combined.pdf"
+
+    combined_path = jd / f"source_0_{combined_name}"
+    page_count = _merge_pdfs(part_pdfs, combined_path)
+
+    # Drop intermediate part PDFs when they differ from the combined output
+    for p in part_pdfs:
+        try:
+            if p.resolve() != combined_path.resolve() and p.exists():
+                p.unlink()
+        except OSError:
+            pass
+
+    saved = [{
+        "index": 0,
+        "name": combined_name,
+        "path": combined_path.name,
+        "kind": "image" if (len(accepted) == 1 and any_image) else "pdf",
+        "page_count": page_count,
+        "source_names": source_names,
+        "combined": len(source_names) > 1,
+    }]
+    if first_image_path and len(accepted) == 1:
+        saved[0]["image_path"] = first_image_path
+
     meta = {
         "id": job_id,
         "owner": user["id"],
@@ -470,31 +574,42 @@ async def upload_pdfs(
     }
     _ensure_report_date(meta)
     # Title block → report header fields (Part Number, Revision, Mass, etc.)
-    if saved and saved[0].get("kind") == "pdf":
+    try:
         from app.services.title_block_extract import extract_title_block_meta, merge_title_meta
 
-        merge_title_meta(meta, extract_title_block_meta(jd / saved[0]["path"]))
+        merge_title_meta(meta, extract_title_block_meta(combined_path))
+    except Exception:
+        pass
     _save_meta(job_id, meta)
     # Input preview only (panel 1) — do NOT create balloon preview yet
-    first = saved[0]
-    if first.get("kind") == "image" and first.get("image_path"):
-        _copy_image_preview(jd / first["image_path"], jd / "input_preview.png")
+    if saved[0].get("kind") == "image" and saved[0].get("image_path"):
+        _copy_image_preview(jd / saved[0]["image_path"], jd / "input_preview.png")
     else:
-        _render_preview(jd / first["path"], jd / "input_preview.png", 0)
+        _render_preview(combined_path, jd / "input_preview.png", 0)
     # Ensure stale balloon preview is gone
     balloon_prev = jd / "balloon_preview.png"
     if balloon_prev.exists():
         balloon_prev.unlink()
+
+    n = len(source_names)
+    if n > 1:
+        msg = (
+            f"Combined {n} files into one PDF ({page_count} pages). "
+            "Run auto ballooning to process every page."
+        )
+    elif page_count > 1:
+        msg = (
+            f"Uploaded multi-page PDF ({page_count} pages). "
+            "Run auto ballooning to process every page."
+        )
+    else:
+        msg = "Uploaded."
+
     return {
         "job_id": job_id,
         "files": saved,
         "page_count": page_count,
-        "message": (
-            f"Uploaded multi-page PDF ({page_count} pages). "
-            "Run auto ballooning to process every page; download stays one combined PDF."
-            if page_count > 1
-            else "Uploaded."
-        ),
+        "message": msg,
     }
 
 
@@ -502,13 +617,18 @@ async def upload_pdfs(
 def run_balloon(
     job_id: str,
     file_index: int = 0,
-    passes: int = 2,
+    passes: int = 1,
     use_zones: bool = True,
     use_tiles: bool = True,
     user: dict = Depends(require_perm("write")),
 ):
     from app.services.autoballoon_engine import balloon_pdf
+    import logging
     import os
+    import time
+
+    log = logging.getLogger("smorx.balloon")
+    t0 = time.perf_counter()
 
     meta = _load_meta(job_id)
     jd = _job_dir(job_id)
@@ -516,15 +636,20 @@ def run_balloon(
     if file_index < 0 or file_index >= len(files):
         raise HTTPException(status_code=400, detail="Invalid file index")
     src = jd / files[file_index]["path"]
+    fname = files[file_index].get("name") or src.name
+    log.info("balloon start job=%s file=%s passes=%s", job_id, fname, passes)
     # Image / scanned drawings: try OCR so dimension text is detectable
     needs_ocr = files[file_index].get("kind") == "image" or not _pdf_has_text(src)
     if needs_ocr:
+        t_ocr = time.perf_counter()
         _ocr_enrich_pdf(src)
+        log.info("balloon ocr_enrich job=%s %.1fs", job_id, time.perf_counter() - t_ocr)
     pdf_bytes = src.read_bytes()
     ai_on = os.environ.get("SMORX_AI_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}
     # Multi-page PDF: detect + draw on every page; output stays one combined file
     page_count = _pdf_page_count(src)
-    # Default 2 passes; skip dimension OCR when the PDF already has text (much faster).
+    # Default 1 pass; dense sheets skip slow tile sweeps automatically.
+    t_detect = time.perf_counter()
     out_pdf, chars, pass_log = balloon_pdf(
         pdf_bytes,
         passes=max(1, min(passes, 5)),
@@ -533,6 +658,13 @@ def run_balloon(
         use_learning=True,
         ai_fallback=ai_on,
         use_ocr=needs_ocr,
+    )
+    log.info(
+        "balloon detect job=%s %.1fs balloons=%d pass_log=%s",
+        job_id,
+        time.perf_counter() - t_detect,
+        len(chars),
+        pass_log,
     )
     balloons = [
         {
@@ -547,6 +679,9 @@ def run_balloon(
             "pattern": c.pattern,
             "bx": c.bx,
             "by": c.by,
+            "tx": c.tx,
+            "ty": c.ty,
+            "arrow_size": c.arrow_size,
         }
         for c in chars
     ]
@@ -574,6 +709,7 @@ def run_balloon(
         pass
     _ensure_report_date(meta)
     _save_meta(job_id, meta)
+    log.info("balloon done job=%s total=%.1fs balloons=%d", job_id, time.perf_counter() - t0, len(balloons))
     return {
         "job_id": job_id,
         "count": len(balloons),
@@ -600,6 +736,9 @@ def _balloons_to_chars(balloons: list[dict]):
             family="",
             bx=float(b["bx"]) if b.get("bx") is not None else None,
             by=float(b["by"]) if b.get("by") is not None else None,
+            tx=float(b["tx"]) if b.get("tx") is not None else None,
+            ty=float(b["ty"]) if b.get("ty") is not None else None,
+            arrow_size=float(b["arrow_size"]) if b.get("arrow_size") is not None else None,
         )
         for i, b in enumerate(balloons)
     ]
@@ -619,6 +758,9 @@ def _chars_to_balloons(chars) -> list[dict]:
             "pattern": c.pattern,
             "bx": c.bx,
             "by": c.by,
+            "tx": c.tx,
+            "ty": c.ty,
+            "arrow_size": c.arrow_size,
         }
         for c in chars
     ]
@@ -687,7 +829,8 @@ def audit_crosscheck(
         ]
         # Preserve measured values where balloon numbers still match text
         old_rows = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
-        new_rows = characteristics_to_report_rows(balloons)
+        zone_map = _apply_zone_refs(src, balloons) if src and src.exists() else {}
+        new_rows = characteristics_to_report_rows(balloons, zone_map)
         for row in new_rows:
             prev = old_rows.get(int(row["balloon"])) or {}
             if prev.get("text") == row.get("nominal") or prev.get("nominal") == row.get("nominal"):
@@ -791,6 +934,9 @@ def get_job(
         else:
             meta["page_count"] = 1
     return _attach_page_geometry(meta, job_id, max(0, int(page)))
+
+
+@router.post("/{job_id}/report/rebuild")
 def rebuild_report(job_id: str, user: dict = Depends(require_perm("write"))):
     """Rebuild report table from current balloons (keeps measured / instr values when possible)."""
     meta = _load_meta(job_id)
@@ -815,6 +961,11 @@ def rebuild_report(job_id: str, user: dict = Depends(require_perm("write"))):
             row["tol_low"] = prev.get("tol_low")
         if prev.get("tol_high") not in (None, ""):
             row["tol_high"] = prev.get("tol_high")
+        zone_ref = zone_map.get(int(b.get("balloon") or i))
+        if zone_ref and not str(zone_ref).startswith("P"):
+            row["reference"] = zone_ref
+        elif prev.get("reference") and not str(prev.get("reference")).startswith("P"):
+            row["reference"] = prev.get("reference")
         new_rows.append(row)
     meta["report_rows"] = new_rows
     _ensure_measure_columns(meta)
@@ -877,6 +1028,9 @@ def preview_balloon(
 def download_ballooned(job_id: str, user: dict = Depends(require_perm("read"))):
     meta = _load_meta(job_id)
     idx = int(meta.get("active_file") or 0)
+    if meta.get("balloon_pdf_stale"):
+        _regenerate_balloon_pdf(job_id, meta)
+        meta = _load_meta(job_id)
     p = _job_dir(job_id) / f"ballooned_{idx}.pdf"
     if not p.exists():
         raise HTTPException(status_code=404, detail="Ballooned PDF missing")
@@ -903,6 +1057,7 @@ def update_balloons(
     job_id: str,
     body: BalloonUpdate,
     user: dict = Depends(require_perm("write")),
+    redraw_pdf: bool = Query(True),
 ):
     meta = _load_meta(job_id)
     jd = _job_dir(job_id)
@@ -911,9 +1066,14 @@ def update_balloons(
     src = jd / files[idx]["path"]
     # Preserve numbers (1,2,3…N+1). Do not reshuffle by page position.
     balloons = _renumber([b.model_dump() for b in body.balloons], compact=False)
-    out_pdf = jd / f"ballooned_{idx}.pdf"
-    balloons = _draw_balloons_overlay(src, balloons, out_pdf)
-    _render_preview(out_pdf, jd / "balloon_preview.png", 0)
+    if redraw_pdf:
+        out_pdf = jd / f"ballooned_{idx}.pdf"
+        balloons = _draw_balloons_overlay(src, balloons, out_pdf)
+        _render_preview(out_pdf, jd / "balloon_preview.png", 0)
+        meta["balloon_pdf_stale"] = False
+    else:
+        balloons = _ensure_balloon_leaders(balloons)
+        meta["balloon_pdf_stale"] = True
     # Keep report row alignment by balloon number; refresh zone reference from border grid
     old_rows = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
     zone_map = _apply_zone_refs(src, balloons)
@@ -929,15 +1089,17 @@ def update_balloons(
         row["remarks"] = prev.get("remarks", "")
         row["tol_low"] = prev.get("tol_low") or row.get("tol_low", "")
         row["tol_high"] = prev.get("tol_high") or row.get("tol_high", "")
-        if prev.get("reference") and str(prev.get("reference")).startswith("P") is False:
-            # Keep user-edited non-page references only if zone missing
-            pass
+        zone_ref = zone_map.get(int(b["balloon"]))
+        if zone_ref and not str(zone_ref).startswith("P"):
+            row["reference"] = zone_ref
+        elif prev.get("reference") and not str(prev.get("reference")).startswith("P"):
+            row["reference"] = prev.get("reference")
         new_rows.append(row)
     meta["balloons"] = balloons
     meta["report_rows"] = new_rows
     _ensure_measure_columns(meta)
     _save_meta(job_id, meta)
-    return {"count": len(balloons), "balloons": balloons}
+    return {"count": len(balloons), "balloons": balloons, "report_rows": new_rows}
 
 
 @router.post("/{job_id}/balloons/create")
@@ -964,6 +1126,7 @@ def create_balloon(
 
     balloons = list(meta.get("balloons") or [])
     next_no = _next_balloon_no(balloons)
+    bx, by = _default_balloon_leader(x, y, width, height)
     balloons.append({
         "balloon": next_no,
         "page": page,
@@ -974,9 +1137,8 @@ def create_balloon(
         "height": height,
         "category": "manual",
         "pattern": "manual",
-        # None → draw_balloons runs placement rules (leader + circle offset)
-        "bx": None,
-        "by": None,
+        "bx": bx,
+        "by": by,
     })
     # learn when we have useful text
     if cleaned:
@@ -986,7 +1148,7 @@ def create_balloon(
         except Exception:
             pass
     body = BalloonUpdate(balloons=balloons)
-    return update_balloons(job_id, body, user)
+    return update_balloons(job_id, body, user, redraw_pdf=False)
 
 
 @router.delete("/{job_id}/balloons/{balloon_no}")
@@ -1000,7 +1162,7 @@ def delete_balloon(
     # Compact 1..N after delete so the sequence stays contiguous
     balloons = _renumber(balloons, compact=True)
     body = BalloonUpdate(balloons=balloons)
-    return update_balloons(job_id, body, user)
+    return update_balloons(job_id, body, user, redraw_pdf=False)
 
 
 @router.post("/{job_id}/title-extract")
@@ -1039,6 +1201,7 @@ def extract_title_block(job_id: str, user: dict = Depends(require_perm("write"))
 def save_report(
     job_id: str,
     body: ReportPayload,
+    local_only: bool = Query(False),
     user: dict = Depends(require_perm("write")),
 ):
     meta = _load_meta(job_id)
@@ -1056,8 +1219,11 @@ def save_report(
     meta["authorized_signatory"] = body.authorized_signatory
     meta["report_rows"] = [r.model_dump() for r in body.rows]
     meta["measure_columns"] = [c.model_dump() for c in body.measure_columns]
-    _save_meta(job_id, meta)
-    return {"ok": True}
+    if local_only:
+        _save_meta_local(job_id, meta)
+    else:
+        _save_meta(job_id, meta)
+    return {"ok": True, "rows": len(meta["report_rows"])}
 
 
 @router.get("/{job_id}/report/status")
@@ -1083,7 +1249,7 @@ def download_report_pdf(job_id: str, user: dict = Depends(require_perm("read")))
         src = jd / files[idx]["path"] if files else None
         rows = _build_report_rows(src, meta["balloons"]) if src else characteristics_to_report_rows(meta["balloons"])
         meta["report_rows"] = rows
-        _save_meta(job_id, meta)
+        _save_meta_local(job_id, meta)
     _ensure_measure_columns(meta)
     _ensure_report_date(meta)
     payload = {
@@ -1102,14 +1268,18 @@ def download_report_pdf(job_id: str, user: dict = Depends(require_perm("read")))
         "rows": rows,
         "measure_columns": meta.get("measure_columns") or default_measure_columns(),
     }
+    jd = _job_dir(job_id)
+    out_pdf = jd / "inspection_report.pdf"
     try:
         pdf = build_report_pdf(payload)
+        out_pdf.write_bytes(pdf)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Report PDF generation failed: {e}") from e
-    return Response(
-        content=pdf,
+    return FileResponse(
+        out_pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{job_id}_inspection_report.pdf"'},
+        filename=f"{job_id}_inspection_report.pdf",
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -1119,7 +1289,7 @@ def save_and_download_report_pdf(
     body: ReportPayload,
     user: dict = Depends(require_perm("write")),
 ):
-    """Save current report fields and return the PDF in one request (avoids a second GET that can hang)."""
+    """Save current report fields (local) and return the PDF."""
     meta = _load_meta(job_id)
     meta["part_number"] = body.part_number
     meta["part_name"] = body.part_name
@@ -1135,16 +1305,20 @@ def save_and_download_report_pdf(
     meta["authorized_signatory"] = body.authorized_signatory
     meta["report_rows"] = [r.model_dump() for r in body.rows]
     meta["measure_columns"] = [c.model_dump() for c in body.measure_columns]
-    _save_meta(job_id, meta)
+    _save_meta_local(job_id, meta)
     payload = body.model_dump()
+    jd = _job_dir(job_id)
+    out_pdf = jd / "inspection_report.pdf"
     try:
         pdf = build_report_pdf(payload)
+        out_pdf.write_bytes(pdf)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Report PDF generation failed: {e}") from e
-    return Response(
-        content=pdf,
+    return FileResponse(
+        out_pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{job_id}_inspection_report.pdf"'},
+        filename=f"{job_id}_inspection_report.pdf",
+        headers={"Cache-Control": "no-store"},
     )
 
 

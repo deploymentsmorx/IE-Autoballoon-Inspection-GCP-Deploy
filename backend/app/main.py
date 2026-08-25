@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import FastAPI
@@ -60,6 +61,7 @@ if STATIC.exists():
 @app.on_event("startup")
 def _startup():
     global DB_MODE
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         from app.services.autoballoon_engine import _resolve_tessdata
 

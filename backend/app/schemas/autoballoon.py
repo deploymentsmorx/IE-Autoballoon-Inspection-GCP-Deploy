@@ -15,6 +15,9 @@ class Balloon(BaseModel):
     pattern: str = ""
     bx: float | None = None
     by: float | None = None
+    tx: float | None = None
+    ty: float | None = None
+    arrow_size: float | None = None
 
 
 class BalloonUpdate(BaseModel):

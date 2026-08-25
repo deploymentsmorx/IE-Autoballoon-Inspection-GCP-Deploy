@@ -13,76 +13,119 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip().upper()
 
 
-def _on_border(x: float, y: float, page_rect: fitz.Rect, margin_frac: float = 0.055) -> str | None:
+def _page_mediabox(page: fitz.Page) -> fitz.Rect:
+    """Balloon x/y and CAD geometry use unrotated mediabox space."""
+    return fitz.Rect(page.mediabox)
+
+
+def _to_mediabox(page: fitz.Page, x: float, y: float) -> tuple[float, float]:
+    """Map a point from page display space into mediabox (draw) space."""
+    pt = fitz.Point(x, y) * page.derotation_matrix
+    return float(pt.x), float(pt.y)
+
+
+def _on_border(
+    x: float,
+    y: float,
+    page_rect: fitz.Rect,
+    *,
+    margin_frac: float = 0.048,
+) -> str | None:
     """Return which border edge a point sits on, if any."""
     short = min(page_rect.width, page_rect.height)
-    margin = max(18.0, min(100.0, short * margin_frac))
-    left = x < page_rect.x0 + margin
-    right = x > page_rect.x1 - margin
-    top = y < page_rect.y0 + margin
-    bottom = y > page_rect.y1 - margin
-    if left:
+    margin = max(22.0, min(110.0, short * margin_frac))
+    if x < page_rect.x0 + margin:
         return "left"
-    if right:
+    if x > page_rect.x1 - margin:
         return "right"
-    if top:
+    if y < page_rect.y0 + margin:
         return "top"
-    if bottom:
+    if y > page_rect.y1 - margin:
         return "bottom"
     return None
 
 
+def _parse_grid_token(t: str) -> tuple[str | None, str | None]:
+    """Parse border mark → (column letter, row number)."""
+    t = _clean(t)
+    if not t:
+        return None, None
+    m = re.match(r"^([A-Z])(\d{1,3})$", t)
+    if m:
+        return m.group(1), m.group(2).lstrip("0") or "0"
+    if re.match(r"^[A-Z]$", t):
+        return t, None
+    if re.match(r"^\d{1,3}$", t):
+        return None, t.lstrip("0") or "0"
+    return None, None
+
+
+def _dedupe_marks(marks: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    buckets: dict[str, list[float]] = {}
+    for lab, pos in marks:
+        buckets.setdefault(lab, []).append(pos)
+    out: list[tuple[str, float]] = []
+    for lab, positions in buckets.items():
+        positions.sort()
+        out.append((lab, positions[len(positions) // 2]))
+    out.sort(key=lambda x: x[1])
+    return out
+
+
 def _collect_border_marks(page: fitz.Page) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
     """
-    Collect letter marks (A,B,C…) and number marks (1,2,3…) from the sheet frame.
-    Letters → typically horizontal axis (top/bottom); numbers → vertical (left/right).
-    Returns (letters_as_(label, axis_pos), numbers_as_(label, axis_pos)).
+    Collect column (X) and row (Y) grid marks from the sheet frame in mediabox space.
     """
-    page_rect = page.rect
-    letters: list[tuple[str, float, str]] = []  # label, pos along edge, edge
+    page_rect = _page_mediabox(page)
+    letters: list[tuple[str, float, str]] = []
     numbers: list[tuple[str, float, str]] = []
 
     for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
         for line in block.get("lines", []):
             for span in line.get("spans", []):
                 t = _clean(span.get("text", ""))
                 if not t:
                     continue
                 x0, y0, x1, y1 = span["bbox"]
-                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                cx, cy = _to_mediabox(page, (x0 + x1) / 2, (y0 + y1) / 2)
                 edge = _on_border(cx, cy, page_rect)
                 if not edge:
                     continue
-                if re.match(r"^[A-Z]$", t):
-                    # Position along the long axis of that edge
+
+                letter, number = _parse_grid_token(t)
+                if letter:
                     pos = cx if edge in {"top", "bottom"} else cy
-                    letters.append((t, pos, edge))
-                elif re.match(r"^\d{1,2}$", t):
+                    letters.append((letter, pos, edge))
+                if number:
                     pos = cy if edge in {"left", "right"} else cx
-                    numbers.append((t, pos, edge))
+                    numbers.append((number, pos, edge))
 
-    # Prefer letters from top/bottom (X), numbers from left/right (Y)
-    letter_marks = [(lab, pos) for lab, pos, edge in letters if edge in {"top", "bottom"}]
-    if not letter_marks:
-        letter_marks = [(lab, pos) for lab, pos, _ in letters]
+    def from_edges(
+        marks: list[tuple[str, float, str]],
+        edges: set[str],
+    ) -> list[tuple[str, float]]:
+        picked = [(lab, pos) for lab, pos, edge in marks if edge in edges]
+        if len(picked) >= 2:
+            return _dedupe_marks(picked)
+        return _dedupe_marks([(lab, pos) for lab, pos, _ in marks])
 
-    number_marks = [(lab, pos) for lab, pos, edge in numbers if edge in {"left", "right"}]
-    if not number_marks:
-        number_marks = [(lab, pos) for lab, pos, _ in numbers]
+    # ISO: letters along top/bottom (X), numbers along left/right (Y)
+    letter_marks = from_edges(letters, {"top", "bottom"})
+    number_marks = from_edges(numbers, {"left", "right"})
 
-    # Dedupe by label keeping median-ish position
-    def dedupe(marks: list[tuple[str, float]]) -> list[tuple[str, float]]:
-        buckets: dict[str, list[float]] = {}
-        for lab, pos in marks:
-            buckets.setdefault(lab, []).append(pos)
-        out = []
-        for lab, positions in buckets.items():
-            positions.sort()
-            out.append((lab, positions[len(positions) // 2]))
-        out.sort(key=lambda x: x[1])
-        return out
+    # Alternate: numbers on top/bottom, letters on left/right
+    if len(letter_marks) < 2:
+        alt = from_edges(numbers, {"top", "bottom"})
+        if len(alt) >= 2:
+            letter_marks = alt
+    if len(number_marks) < 2:
+        alt = from_edges(letters, {"left", "right"})
+        if len(alt) >= 2:
+            number_marks = alt
 
-    return dedupe(letter_marks), dedupe(number_marks)
+    return letter_marks, number_marks
 
 
 def _nearest_label(marks: list[tuple[str, float]], value: float) -> str:
@@ -106,11 +149,10 @@ def zone_reference_for_point(
     page_no: int = 1,
 ) -> str:
     """
-    Return border-grid style reference for a balloon center, e.g. 'B-4' or 'C3'.
-    Falls back to 'P{n}' if no frame marks are found.
+    Border-grid reference for balloon centre (mediabox x/y), e.g. 'B-4'.
+    Falls back to 'P{n}' when frame marks are missing.
     """
     letters, numbers = _collect_border_marks(page)
-    # Letters track X (horizontal), numbers track Y (vertical) — standard ISO frame
     letter = _nearest_label(letters, x)
     number = _nearest_label(numbers, y)
     if letter and number:

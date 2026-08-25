@@ -156,8 +156,8 @@ fn download_url(
   if let Some(auth) = authorization.filter(|s| !s.is_empty()) {
     req = req.set("Authorization", &auth);
   }
+  // No client timeout — large inspection reports can take several minutes.
   let resp = req
-    .timeout(std::time::Duration::from_secs(180))
     .call()
     .map_err(|e| format!("Download failed: {e}"))?;
   if !(200..300).contains(&resp.status()) {
@@ -179,10 +179,8 @@ fn download_post(
   if let Some(auth) = authorization.filter(|s| !s.is_empty()) {
     req = req.set("Authorization", &auth);
   }
-  match req
-    .timeout(std::time::Duration::from_secs(180))
-    .send_string(&body)
-  {
+  // No client timeout — wait until the API finishes the PDF.
+  match req.send_string(&body) {
     Ok(resp) => {
       if !(200..300).contains(&resp.status()) {
         return Err(format!("Report PDF download failed with HTTP {}", resp.status()));
