@@ -490,35 +490,38 @@ export default function InspectionPage() {
         return;
       }
     }
-    // Open report immediately; refresh grid references in background.
+    // Open report immediately; refresh grid references in background (do not block UI).
     setShowReport(true);
     if (job?.balloons?.length) {
-      try {
-        await api.rebuildReport(jobId);
-        await refresh(jobId);
-      } catch (e: any) {
-        // Keep report open with existing rows — do not block close/download on rebuild.
-        if (!job?.report_rows?.length) {
-          setJob((j) => {
-            if (!j) return j;
-            const rows = (j.balloons || []).map((b, i) => ({
-              sno: i + 1,
-              balloon: b.balloon,
-              reference: `P${b.page || 1}`,
-              nominal: b.text || "",
-              tol_low: "",
-              tol_high: "",
-              instrument: "",
-              unit: "mm",
-              instr_id: "",
-              measured: ["", "", ""],
-              remarks: "",
-            }));
-            return { ...j, report_rows: rows };
-          });
+      void (async () => {
+        try {
+          const res = await api.rebuildReport(jobId);
+          if (res?.rows?.length) {
+            setJob((j) => (j ? { ...j, report_rows: res.rows } : j));
+          }
+        } catch (e: any) {
+          if (!job?.report_rows?.length) {
+            setJob((j) => {
+              if (!j) return j;
+              const rows = (j.balloons || []).map((b, i) => ({
+                sno: i + 1,
+                balloon: b.balloon,
+                reference: `P${b.page || 1}`,
+                nominal: b.text || "",
+                tol_low: "",
+                tol_high: "",
+                instrument: "",
+                unit: "mm",
+                instr_id: "",
+                measured: ["", "", ""],
+                remarks: "",
+              }));
+              return { ...j, report_rows: rows };
+            });
+          }
+          console.warn("Report rebuild failed:", e?.message || e);
         }
-        console.warn("Report rebuild failed:", e?.message || e);
-      }
+      })();
     } else {
       setErr("No balloons yet — run auto ballooning or create balloons first.");
     }

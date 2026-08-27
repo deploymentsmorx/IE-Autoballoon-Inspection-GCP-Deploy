@@ -957,32 +957,19 @@ def rebuild_report(job_id: str, user: dict = Depends(require_perm("write"))):
     idx = int(meta.get("active_file") or 0)
     files = meta.get("files") or []
     src = jd / files[idx]["path"] if files else None
-    zone_map = _apply_zone_refs(src, balloons) if src else {}
+    zone_map = _apply_zone_refs(src, balloons) if src and src.exists() else {}
     old_rows = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
-    new_rows = []
-    for i, b in enumerate(balloons, start=1):
-        row = characteristics_to_report_rows([b], zone_map)[0]
-        prev = old_rows.get(int(b.get("balloon") or i)) or {}
-        row["sno"] = i
-        row["instr_id"] = prev.get("instr_id", "")
-        row["instrument"] = prev.get("instrument", "")
-        row["unit"] = prev.get("unit") or row.get("unit") or "mm"
-        row["measured"] = prev.get("measured") or ["", ""]
-        row["remarks"] = prev.get("remarks", "")
-        if prev.get("tol_low") not in (None, ""):
-            row["tol_low"] = prev.get("tol_low")
-        if prev.get("tol_high") not in (None, ""):
-            row["tol_high"] = prev.get("tol_high")
-        zone_ref = zone_map.get(int(b.get("balloon") or i))
-        if zone_ref and not str(zone_ref).startswith("P"):
+    new_rows = _report_rows_full(balloons, old_rows, zone_map)
+    # Always apply fresh grid refs (do not keep stale P1 / wrong zones)
+    for row in new_rows:
+        bno = int(row.get("balloon") or 0)
+        zone_ref = zone_map.get(bno)
+        if zone_ref:
             row["reference"] = zone_ref
-        elif prev.get("reference") and not str(prev.get("reference")).startswith("P"):
-            row["reference"] = prev.get("reference")
-        new_rows.append(row)
     meta["report_rows"] = new_rows
     _ensure_measure_columns(meta)
     _ensure_report_date(meta)
-    _save_meta(job_id, meta)
+    _save_meta_local(job_id, meta)
     return {"count": len(new_rows), "rows": new_rows}
 
 @router.get("/{job_id}/page-geometry")
@@ -1114,15 +1101,21 @@ def _merge_report_row(prev: dict, row: dict, b: dict, zone_map: dict[int, str]) 
     row["tol_low"] = prev.get("tol_low") or row.get("tol_low", "")
     row["tol_high"] = prev.get("tol_high") or row.get("tol_high", "")
     zone_ref = zone_map.get(bno)
-    if zone_ref and not str(zone_ref).startswith("P"):
+    # Prefer freshly computed border-grid location whenever available
+    if zone_ref:
         row["reference"] = zone_ref
-    elif prev.get("reference") and not str(prev.get("reference")).startswith("P"):
+    elif prev.get("reference"):
         row["reference"] = prev.get("reference")
     return row
 
 
-def _report_rows_fast(balloons: list[dict], old_rows: dict[int, dict]) -> list[dict]:
-    """Update report rows without re-scanning border grid (position-only edits)."""
+def _report_rows_fast(
+    balloons: list[dict],
+    old_rows: dict[int, dict],
+    zone_map: dict[int, str] | None = None,
+) -> list[dict]:
+    """Update report rows quickly; refresh Reference from zone_map when provided."""
+    zone_map = zone_map or {}
     new_rows = []
     for i, b in enumerate(balloons, start=1):
         bno = int(b.get("balloon") or i)
@@ -1132,16 +1125,19 @@ def _report_rows_fast(balloons: list[dict], old_rows: dict[int, dict]) -> list[d
             row["sno"] = i
             row["balloon"] = bno
         else:
-            row = characteristics_to_report_rows([b], {})[0]
+            row = characteristics_to_report_rows([b], zone_map)[0]
             row["sno"] = i
         text = str(b.get("text") or "")
         if text:
-            fresh = characteristics_to_report_rows([b], {})[0]
+            fresh = characteristics_to_report_rows([b], zone_map)[0]
             row["nominal"] = fresh.get("nominal", "")
             row["tol_low"] = fresh.get("tol_low", "")
             row["tol_high"] = fresh.get("tol_high", "")
-        if not row.get("reference"):
-            row["reference"] = f"P{b.get('page', 1)}"
+        zone_ref = zone_map.get(bno)
+        if zone_ref and not str(zone_ref).startswith("P"):
+            row["reference"] = zone_ref
+        elif not row.get("reference") or str(row.get("reference")).startswith("P"):
+            row["reference"] = zone_ref or f"P{b.get('page', 1)}"
         new_rows.append(row)
     return new_rows
 
@@ -1185,20 +1181,34 @@ def update_balloons(
         meta["balloon_pdf_stale"] = True
     old_rows = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
     prev_balloons = meta.get("balloons") or []
-    prev_nos = {int(b.get("balloon") or 0) for b in prev_balloons}
-    new_nos = {int(b.get("balloon") or 0) for b in balloons}
+    prev_by_no = {int(b.get("balloon") or 0): b for b in prev_balloons}
+    prev_nos = set(prev_by_no)
     added = [b for b in balloons if int(b.get("balloon") or 0) not in prev_nos]
     count_changed = len(balloons) != len(prev_balloons)
-    if redraw_pdf:
-        zone_map = _apply_zone_refs(src, balloons)
+
+    def _pos_key(b: dict) -> tuple:
+        return (
+            round(float(b.get("x") or 0), 2),
+            round(float(b.get("y") or 0), 2),
+            round(float(b.get("width") or 0), 2),
+            round(float(b.get("height") or 0), 2),
+            int(b.get("page") or 1),
+        )
+
+    moved = [
+        b
+        for b in balloons
+        if int(b.get("balloon") or 0) in prev_by_no
+        and _pos_key(b) != _pos_key(prev_by_no[int(b.get("balloon") or 0)])
+    ]
+    # Zone scan is cheap now (border marks cached once per page).
+    need_zones = redraw_pdf or count_changed or bool(added) or bool(moved)
+    zone_targets = balloons if (redraw_pdf or count_changed) else (added + moved)
+    zone_map = _apply_zone_refs(src, zone_targets) if (need_zones and src.exists()) else {}
+    if redraw_pdf or count_changed:
         new_rows = _report_rows_full(balloons, old_rows, zone_map)
-    elif count_changed and added:
-        zone_map = _apply_zone_refs(src, added) if src.exists() else {}
-        new_rows = _report_rows_full(balloons, old_rows, zone_map)
-    elif count_changed:
-        new_rows = _report_rows_full(balloons, old_rows, {})
     else:
-        new_rows = _report_rows_fast(balloons, old_rows)
+        new_rows = _report_rows_fast(balloons, old_rows, zone_map)
     meta["balloons"] = balloons
     meta["report_rows"] = new_rows
     _ensure_measure_columns(meta)
