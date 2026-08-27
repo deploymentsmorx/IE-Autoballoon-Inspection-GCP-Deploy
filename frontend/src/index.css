@@ -218,6 +218,17 @@ input, select, button, textarea { font: inherit; }
   overscroll-behavior: contain;
   touch-action: none;
 }
+.viewer-loading-overlay {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  z-index: 3;
+  padding: 4px 10px;
+  background: rgba(10, 14, 19, 0.75);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  pointer-events: none;
+}
 .viewer-canvas,
 .balloon-canvas.viewer-canvas {
   width: 100%;

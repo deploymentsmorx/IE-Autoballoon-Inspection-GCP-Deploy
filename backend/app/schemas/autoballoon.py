@@ -57,5 +57,14 @@ class ReportPayload(BaseModel):
     supplier_name: str = ""
     customer_name: str = ""
     authorized_signatory: str = ""
-    rows: list[ReportRow]
+    rows: list[ReportRow] = Field(default_factory=list)
     measure_columns: list[MeasureCol] = Field(default_factory=list)
+
+
+class ReportRowsChunk(BaseModel):
+    """Partial row upload so large reports do not freeze the desktop UI."""
+    rows: list[ReportRow]
+    offset: int = 0
+    replace: bool = False
+    measure_columns: list[MeasureCol] | None = None
+    done: bool = False

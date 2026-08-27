@@ -361,6 +361,8 @@ export const api = {
       `/api/jobs/${jobId}/audit/add-missing`,
       { method: "POST", body: JSON.stringify({ items }) }),
   getJob: (jobId: string, page = 0) => req<Job>(`/api/jobs/${jobId}?page=${page}`),
+  getPageGeometry: (jobId: string, page = 0) =>
+    req<PageGeometry>(`/api/jobs/${jobId}/page-geometry?page=${page}`),
   saveBalloons: (jobId: string, balloons: Balloon[], opts?: { redrawPdf?: boolean }) =>
     req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(
       `/api/jobs/${jobId}/balloons?redraw_pdf=${opts?.redrawPdf !== false}`,
@@ -385,10 +387,64 @@ export const api = {
   deleteBalloon: (jobId: string, no: number) =>
     req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(`/api/jobs/${jobId}/balloons/${no}`, {
       method: "DELETE"}),
-  saveReport: (jobId: string, payload: ReportPayload, opts?: { localOnly?: boolean }) =>
-    req(`/api/jobs/${jobId}/report?local_only=${opts?.localOnly ? "true" : "false"}`, {
+  saveReport: (
+    jobId: string,
+    payload: ReportPayload,
+    opts?: { localOnly?: boolean; headersOnly?: boolean },
+  ) =>
+    req(`/api/jobs/${jobId}/report?local_only=${opts?.localOnly ? "true" : "false"}&headers_only=${opts?.headersOnly ? "true" : "false"}`, {
       method: "PUT",
       body: JSON.stringify(payload)}),
+  saveReportRowsChunk: (
+    jobId: string,
+    body: {
+      rows: ReportRow[];
+      offset: number;
+      replace?: boolean;
+      done?: boolean;
+      measure_columns?: MeasureCol[];
+    },
+  ) =>
+    req<{ ok: boolean; rows: number; offset: number }>(
+      `/api/jobs/${jobId}/report/rows?local_only=true`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  /** Save large reports in chunks so the UI stays responsive. */
+  saveReportChunked: async (
+    jobId: string,
+    payload: ReportPayload,
+    onProgress?: (msg: string) => void,
+  ) => {
+    const rows = payload.rows || [];
+    const headers = { ...payload, rows: [] as ReportRow[] };
+    onProgress?.("Saving report header…");
+    await api.saveReport(jobId, headers, { localOnly: true, headersOnly: true });
+    const chunkSize = 400;
+    for (let offset = 0; offset < rows.length; offset += chunkSize) {
+      const chunk = rows.slice(offset, offset + chunkSize);
+      const done = offset + chunk.length >= rows.length;
+      onProgress?.(
+        `Saving rows ${offset + 1}–${offset + chunk.length} of ${rows.length}…`,
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      await api.saveReportRowsChunk(jobId, {
+        rows: chunk,
+        offset,
+        replace: offset === 0,
+        done,
+        measure_columns: done ? payload.measure_columns : undefined,
+      });
+    }
+    if (!rows.length) {
+      await api.saveReportRowsChunk(jobId, {
+        rows: [],
+        offset: 0,
+        replace: true,
+        done: true,
+        measure_columns: payload.measure_columns,
+      });
+    }
+  },
   rebuildReport: (jobId: string) =>
     req<{ count: number; rows: ReportRow[] }>(`/api/jobs/${jobId}/report/rebuild`, {
       method: "POST"}),
@@ -418,12 +474,30 @@ export const api = {
   downloadReportPdf: (jobId: string) => withAuthQuery(`/api/jobs/${jobId}/report/pdf`),
   downloadExcel: (jobId: string) => withAuthQuery(`/api/jobs/${jobId}/report/excel`),
   /**
-   * Save report locally, then download PDF via GET.
-   * Avoids posting thousands of rows through the desktop bridge (which froze the UI).
+   * Fast download: save headers only (rows already on server), then GET PDF.
+   * Pass rowsDirty=true to upload row edits in chunks first.
    */
-  downloadReportPdfFile: async (jobId: string, payload: ReportPayload, suggestedName?: string) => {
+  downloadReportPdfFile: async (
+    jobId: string,
+    payload: ReportPayload,
+    suggestedName?: string,
+    opts?: { rowsDirty?: boolean; skipSave?: boolean; onProgress?: (msg: string) => void },
+  ) => {
     const filename = suggestedName || `${jobId}_inspection_report.pdf`;
-    await api.saveReport(jobId, payload, { localOnly: true });
+    const onProgress = opts?.onProgress;
+    if (!opts?.skipSave) {
+      if (opts?.rowsDirty) {
+        await api.saveReportChunked(jobId, payload, onProgress);
+      } else {
+        onProgress?.("Saving report header…");
+        const headersOnly = { ...payload, rows: [] as ReportRow[] };
+        await api.saveReport(jobId, headersOnly, { localOnly: true, headersOnly: true });
+      }
+    }
+    onProgress?.(
+      `Building PDF (${payload.rows?.length || 0} rows)… window stays responsive — please wait`,
+    );
+    await new Promise((r) => setTimeout(r, 40));
     return api.downloadFile(api.downloadReportPdf(jobId), filename);
   },
   authFetch: fetchBlob,

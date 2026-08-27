@@ -6,7 +6,7 @@ from .auth import (
     LoginRequest,
     OrgCreate,
 )
-from .autoballoon import Balloon, BalloonUpdate, MeasureCol, ReportPayload, ReportRow
+from .autoballoon import Balloon, BalloonUpdate, MeasureCol, ReportPayload, ReportRow, ReportRowsChunk
 from .customer import (
     ApprovedDeviceCreate,
     ApprovedDeviceOut,
@@ -34,4 +34,5 @@ __all__ = [
     "MeasureCol",
     "ReportRow",
     "ReportPayload",
+    "ReportRowsChunk",
 ]

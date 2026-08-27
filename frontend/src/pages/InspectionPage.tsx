@@ -48,6 +48,8 @@ export default function InspectionPage() {
   const moveUndoPushedRef = useRef(false);
   const balloonsDirtyRef = useRef(false);
   const syncQueueRef = useRef(Promise.resolve());
+  const createQueueRef = useRef(Promise.resolve());
+  const pageGeomCacheRef = useRef<Map<number, import("../api").PageGeometry>>(new Map());
   const undoHandlerRef = useRef<() => void>(() => {});
   const modeRef = useRef(mode);
   modeRef.current = mode;
@@ -167,11 +169,9 @@ export default function InspectionPage() {
     }
     clearBalloonsDirty();
     if (opts?.bumpPreview) bumpPreview();
-    if (opts?.bumpPreview || opts?.reportHint) {
-      await refresh(jobId, {
-        bumpPreview: !!opts?.bumpPreview,
-        reportHint: !!opts?.reportHint,
-      });
+    if (opts?.reportHint && showReport) {
+      const n = res?.report_rows?.length ?? 0;
+      if (n) setAuditMsg(`Inspection report updated (${n} rows).`);
     }
   };
 
@@ -223,6 +223,22 @@ export default function InspectionPage() {
   }, [jobId]);
 
   useEffect(() => {
+    if (!jobId) return;
+    const pc = Math.max(1, Number(job?.page_count) || 1);
+    if (pc <= 1) return;
+    const neighbors = [viewPage - 1, viewPage + 1].filter((p) => p >= 0 && p < pc);
+    for (const p of neighbors) {
+      const url = api.previewInputUrl(jobId, p, previewRev);
+      void api.authFetch(url).catch(() => {});
+    }
+  }, [jobId, viewPage, job?.page_count, previewRev]);
+
+  useEffect(() => {
+    const geom = job?.page_geometry;
+    if (geom) pageGeomCacheRef.current.set(viewPage, geom);
+  }, [job?.page_geometry, viewPage]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
         e.preventDefault();
@@ -252,18 +268,26 @@ export default function InspectionPage() {
   const focusOutput = hasBalloonOutput && !showInput;
   const inputUrl = jobId ? api.previewInputUrl(jobId, viewPage, previewRev) : "";
 
-  const changePage = async (next: number) => {
+  const changePage = (next: number) => {
     const p = Math.max(0, Math.min(pageCount - 1, next));
     setViewPage(p);
     setSelected(null);
-    if (jobId) {
-      try {
-        await flushUnsavedEdits();
-        await refresh(jobId, { page: p });
-      } catch (e: any) {
-        setErr(e.message);
-      }
+    setDeleteSelected([]);
+    const cached = pageGeomCacheRef.current.get(p);
+    if (cached) {
+      setJob((j) => (j ? { ...j, page_geometry: cached } : j));
     }
+    if (!jobId) return;
+    void (async () => {
+      try {
+        const geom = await api.getPageGeometry(jobId, p);
+        pageGeomCacheRef.current.set(p, geom);
+        setJob((j) => (j ? { ...j, page_geometry: geom } : j));
+      } catch {
+        /* keep previous geometry until retry */
+      }
+    })();
+    void flushUnsavedEdits().catch((e: any) => setErr(e.message));
   };
   const onUpload = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -504,7 +528,7 @@ export default function InspectionPage() {
     void resetLocalJob().then(() => logout());
   };
 
-  const onCreateBox = async (box: { x: number; y: number; width: number; height: number }) => {
+  const onCreateBox = (box: { x: number; y: number; width: number; height: number }) => {
     if (!jobId) return;
     const nextNo =
       Math.max(0, ...(balloonsRef.current.map((b) => Number(b.balloon) || 0))) + 1;
@@ -527,51 +551,53 @@ export default function InspectionPage() {
     };
     setErr("");
     pushUndo();
-    try {
-      await flushUnsavedEdits();
-      const next = [...balloonsRef.current, optimistic];
-      balloonsRef.current = next;
-      setJob((j) => (j ? { ...j, balloons: next, status: "ballooned" } : j));
-      setMode("edit");
-      setSelected(nextNo);
-      setAuditMsg(`Balloon #${nextNo} created — click Save to update PDF.`);
+    const next = [...balloonsRef.current, optimistic];
+    balloonsRef.current = next;
+    setJob((j) => (j ? { ...j, balloons: next, status: "ballooned" } : j));
+    setMode("edit");
+    setSelected(nextNo);
+    setAuditMsg(`Balloon #${nextNo} created — click Save to update PDF.`);
 
-      const res = await api.createBalloon(jobId, {
-        page: viewPage + 1,
-        text: "",
-        ...box,
-        width: w,
-        height: h,
-      });
-      if (res?.balloons?.length) {
-        balloonsRef.current = res.balloons;
-        setJob((j) =>
-          j
-            ? {
-                ...j,
-                balloons: res.balloons,
-                status: "ballooned",
-                report_rows: res.report_rows?.length ? res.report_rows : j.report_rows,
-              }
-            : j,
-        );
-        clearBalloonsDirty();
-        if (showReport && !res.report_rows?.length) {
-          const j = await api.getJob(jobId, viewPage);
-          setJob((prev) => (prev ? { ...prev, report_rows: j.report_rows } : prev));
-          setAuditMsg(`Balloon #${nextNo} created — inspection report updated.`);
-        } else if (showReport) {
-          setAuditMsg(`Balloon #${nextNo} created — inspection report updated.`);
+    createQueueRef.current = createQueueRef.current.then(async () => {
+      try {
+        const withoutPending = balloonsRef.current.filter((b) => b.balloon !== nextNo);
+        if (balloonsDirtyRef.current) {
+          balloonsRef.current = withoutPending;
+          await persistBalloons({ join: false, skipIfClean: true, redrawPdf: false });
+          balloonsRef.current = [...balloonsRef.current, optimistic];
+          setJob((j) => (j ? { ...j, balloons: balloonsRef.current } : j));
         }
+        const res = await api.createBalloon(jobId, {
+          page: viewPage + 1,
+          text: "",
+          ...box,
+          width: w,
+          height: h,
+        });
+        if (res?.balloons?.length) {
+          balloonsRef.current = res.balloons;
+          setJob((j) =>
+            j
+              ? {
+                  ...j,
+                  balloons: res.balloons,
+                  status: "ballooned",
+                  report_rows: res.report_rows?.length ? res.report_rows : j.report_rows,
+                }
+              : j,
+          );
+          clearBalloonsDirty();
+          if (showReport && res.report_rows?.length) {
+            setAuditMsg(`Balloon #${nextNo} created — inspection report updated.`);
+          }
+        }
+      } catch (ex: any) {
+        balloonsRef.current = balloonsRef.current.filter((b) => b.balloon !== nextNo);
+        setJob((j) => (j ? { ...j, balloons: balloonsRef.current } : j));
+        setSelected(null);
+        setErr(ex.message);
       }
-    } catch (ex: any) {
-      balloonsRef.current = balloonsRef.current.filter((b) => b.balloon !== nextNo);
-      setJob((j) =>
-        j ? { ...j, balloons: balloonsRef.current } : j,
-      );
-      setSelected(null);
-      setErr(ex.message);
-    }
+    });
   };
 
   const onMoveBalloon = (no: number, patch: Partial<Balloon>) => {
@@ -622,9 +648,9 @@ export default function InspectionPage() {
       pushUndo();
       await persistBalloons({
         join: true,
-        bumpPreview: true,
         reportHint: showReport,
         skipIfClean: false,
+        redrawPdf: false,
       });
       setMode("view");
       setSelected(null);
@@ -641,19 +667,32 @@ export default function InspectionPage() {
     const prev = undoStackRef.current.pop();
     if (!prev) return;
     setUndoCount(undoStackRef.current.length);
-    setBusy(true);
     setErr("");
-    try {
-      await api.saveBalloons(jobId, prev);
-      await refresh(jobId, { bumpPreview: true, reportHint: showReport });
-      setMode("view");
-      setSelected(null);
-      setAuditMsg("Undo — restored previous balloons and report.");
-    } catch (e: any) {
-      setErr(e.message);
-    } finally {
-      setBusy(false);
-    }
+    balloonsRef.current = prev;
+    setJob((j) => (j ? { ...j, balloons: prev } : j));
+    setMode("view");
+    setSelected(null);
+    clearBalloonsDirty();
+    void (async () => {
+      try {
+        const res = await api.saveBalloons(jobId, prev, { redrawPdf: false });
+        if (res?.balloons?.length) {
+          balloonsRef.current = res.balloons;
+          setJob((j) =>
+            j
+              ? {
+                  ...j,
+                  balloons: res.balloons,
+                  report_rows: res.report_rows?.length ? res.report_rows : j.report_rows,
+                }
+              : j,
+          );
+        }
+        setAuditMsg("Undo — restored previous balloons and report.");
+      } catch (e: any) {
+        setErr(e.message);
+      }
+    })();
   };
 
   undoHandlerRef.current = () => {
@@ -802,7 +841,7 @@ export default function InspectionPage() {
             </div>
           </div>
           {jobId ? (
-            <ZoomImageViewer key={`in-p${viewPage}`} imageUrl={inputUrl} />
+            <ZoomImageViewer imageUrl={inputUrl} />
           ) : (
             <div className="panel-body">
               <div className="placeholder">No file yet.</div>
@@ -944,7 +983,6 @@ export default function InspectionPage() {
 
           {jobId && hasBalloonOutput ? (
             <BalloonCanvas
-              key={`cv-p${viewPage}`}
               imageUrl={inputUrl}
               balloons={pageBalloons}
               mode={mode}
@@ -1130,7 +1168,21 @@ function ReportPanel({
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [page, setPage] = useState(0);
+  const [rowsDirty, setRowsDirty] = useState(false);
+  const [reportDirty, setReportDirty] = useState(false);
   const pageSize = 40;
+
+  const markReportDirty = () => setReportDirty(true);
+  const markRowsDirty = () => {
+    setRowsDirty(true);
+    setReportDirty(true);
+  };
+  const setHeader =
+    (setter: (v: string) => void) =>
+    (v: string) => {
+      markReportDirty();
+      setter(v);
+    };
 
   useEffect(() => {
     const nextRows =
@@ -1150,6 +1202,8 @@ function ReportPanel({
             remarks: "",
           }));
     setRows(nextRows);
+    setRowsDirty(false);
+    setReportDirty(false);
     setCols(job.measure_columns?.length ? job.measure_columns : defaultMeasureCols());
     setPartNumber(job.part_number || "");
     setPartName(job.part_name || "");
@@ -1170,6 +1224,7 @@ function ReportPanel({
   const pageRows = rows.slice(page * pageSize, page * pageSize + pageSize);
 
   const addColumn = () => {
+    markRowsDirty();
     setCols((c) => {
       const n = c.length + 1;
       return [...c, { id: `m${Date.now()}`, label: `M${n}`, values: {} }];
@@ -1177,10 +1232,12 @@ function ReportPanel({
   };
 
   const removeColumn = () => {
+    markRowsDirty();
     setCols((c) => (c.length <= 2 ? c : c.slice(0, -1)));
   };
 
   const renameColumn = (id: string, label: string) => {
+    markRowsDirty();
     setCols((cs) => cs.map((col) => (col.id === id ? { ...col, label } : col)));
   };
 
@@ -1208,6 +1265,7 @@ function ReportPanel({
     const newId = window.prompt("New name / ID", oldId.trim()) || "";
     if (!newId.trim() || newId.trim() === oldId.trim()) return;
     renameInstrumentId(oldId.trim(), newId.trim());
+    markRowsDirty();
     setRows((rs) => rs.map((r) => (r.instr_id === oldId.trim() ? { ...r, instr_id: newId.trim() } : r)));
     setIdRev((n) => n + 1);
     setMsg(`Instrument ID renamed to “${newId.trim()}”.`);
@@ -1230,6 +1288,7 @@ function ReportPanel({
       if (res.supplier_name) setSupplierName(res.supplier_name);
       if (res.customer_name) setCustomerName(res.customer_name);
       if (res.authorized_signatory) setAuthorizedSignatory(res.authorized_signatory);
+      markReportDirty();
       await onSaved();
       const filled = Object.entries(res).filter(([, v]) => String(v || "").trim()).length;
       setMsg(`Title block read from drawing (${filled} fields). Empty report fields were filled.`);
@@ -1241,10 +1300,12 @@ function ReportPanel({
   };
 
   const updateRowByBalloon = (balloon: number, patch: Partial<ReportRow>) => {
+    markRowsDirty();
     setRows((rs) => rs.map((x) => (x.balloon === balloon ? { ...x, ...patch } : x)));
   };
 
   const setColValue = (colId: string, balloon: number, val: string) => {
+    markRowsDirty();
     setCols((cs) =>
       cs.map((col) =>
         col.id === colId ? { ...col, values: { ...col.values, [String(balloon)]: val } } : col,
@@ -1273,7 +1334,14 @@ function ReportPanel({
     setBusy(true);
     setMsg("");
     try {
-      await api.saveReport(jobId, payload());
+      if (rows.length > 500) {
+        await api.saveReportChunked(jobId, payload(), (m) => setMsg(m));
+      } else {
+        setMsg(`Saving report data (${rows.length} rows)…`);
+        await api.saveReport(jobId, payload(), { localOnly: rows.length > 200 });
+      }
+      setRowsDirty(false);
+      setReportDirty(false);
       await onSaved();
       setMsg(`Report saved (${rows.length} rows).`);
     } catch (e: any) {
@@ -1285,16 +1353,29 @@ function ReportPanel({
 
   const downloadPdf = async () => {
     setBusy(true);
-    setMsg(`Generating inspection report PDF (${rows.length} rows)… please wait`);
-    // Let the UI paint "Working…" before heavy JSON / network work
+    setMsg(
+      rowsDirty
+        ? `Preparing download (${rows.length} rows with edits)…`
+        : `Preparing PDF (${rows.length} rows)…`,
+    );
     await new Promise((r) => setTimeout(r, 80));
     try {
       const srcName = job.files?.[0]?.name || "";
       const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
       const body = payload();
-      setMsg(`Saving report data (${rows.length} rows)…`);
-      await new Promise((r) => setTimeout(r, 40));
-      const savedPath = await api.downloadReportPdfFile(jobId, body, `${stem}_inspection_report.pdf`);
+      const needSave = reportDirty || rowsDirty;
+      const savedPath = await api.downloadReportPdfFile(
+        jobId,
+        body,
+        `${stem}_inspection_report.pdf`,
+        {
+          rowsDirty: needSave && rowsDirty,
+          skipSave: !needSave,
+          onProgress: (m) => setMsg(m),
+        },
+      );
+      setRowsDirty(false);
+      setReportDirty(false);
       setMsg(
         savedPath.includes("\\") || savedPath.includes("/")
           ? `Inspection report PDF saved to:\n${savedPath}`
@@ -1344,18 +1425,18 @@ function ReportPanel({
         )}
 
         <div className="report-title-block mb">
-          <TitleField label="Part Number" value={partNumber} onChange={setPartNumber} />
-          <TitleField label="Part Name" value={partName} onChange={setPartName} wide />
-          <TitleField label="Revision" value={revision} onChange={setRevision} />
-          <TitleField label="Material" value={material} onChange={setMaterial} wide />
-          <TitleField label="Mass" value={mass} onChange={setMass} />
-          <TitleField label="Finish Treatment" value={finish} onChange={setFinish} wide />
-          <TitleField label="Date" value={reportDate} onChange={setReportDate} />
-          <TitleField label="Serial Number" value={serialNumber} onChange={setSerialNumber} wide />
-          <TitleField label="Company Name" value={companyName} onChange={setCompanyName} />
-          <TitleField label="Supplier Name" value={supplierName} onChange={setSupplierName} wide />
-          <TitleField label="Customer Name" value={customerName} onChange={setCustomerName} />
-          <TitleField label="Authorized Signatory" value={authorizedSignatory} onChange={setAuthorizedSignatory} wide />
+          <TitleField label="Part Number" value={partNumber} onChange={setHeader(setPartNumber)} />
+          <TitleField label="Part Name" value={partName} onChange={setHeader(setPartName)} wide />
+          <TitleField label="Revision" value={revision} onChange={setHeader(setRevision)} />
+          <TitleField label="Material" value={material} onChange={setHeader(setMaterial)} wide />
+          <TitleField label="Mass" value={mass} onChange={setHeader(setMass)} />
+          <TitleField label="Finish Treatment" value={finish} onChange={setHeader(setFinish)} wide />
+          <TitleField label="Date" value={reportDate} onChange={setHeader(setReportDate)} />
+          <TitleField label="Serial Number" value={serialNumber} onChange={setHeader(setSerialNumber)} wide />
+          <TitleField label="Company Name" value={companyName} onChange={setHeader(setCompanyName)} />
+          <TitleField label="Supplier Name" value={supplierName} onChange={setHeader(setSupplierName)} wide />
+          <TitleField label="Customer Name" value={customerName} onChange={setHeader(setCustomerName)} />
+          <TitleField label="Authorized Signatory" value={authorizedSignatory} onChange={setHeader(setAuthorizedSignatory)} wide />
         </div>
 
         <div className="row-between mb">

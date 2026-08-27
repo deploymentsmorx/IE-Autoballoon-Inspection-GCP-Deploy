@@ -145,9 +145,7 @@ fn save_download(filename: String, bytes: Vec<u8>) -> Result<String, String> {
   write_download(&filename, &bytes)
 }
 
-/// Fetch a URL from Rust and write into Downloads (reliable for large PDFs in WebView2).
-#[tauri::command]
-fn download_url(
+fn download_url_blocking(
   url: String,
   filename: String,
   authorization: Option<String>,
@@ -167,9 +165,20 @@ fn download_url(
   write_download(&filename, &bytes)
 }
 
-/// POST JSON then save response body (inspection report PDF).
+/// Fetch a URL from Rust and write into Downloads (reliable for large PDFs in WebView2).
+/// Runs off the UI thread so the window does not freeze as "(Not Responding)".
 #[tauri::command]
-fn download_post(
+async fn download_url(
+  url: String,
+  filename: String,
+  authorization: Option<String>,
+) -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(move || download_url_blocking(url, filename, authorization))
+    .await
+    .map_err(|e| format!("Download task failed: {e}"))?
+}
+
+fn download_post_blocking(
   url: String,
   filename: String,
   authorization: Option<String>,
@@ -206,6 +215,21 @@ fn download_post(
     }
     Err(e) => Err(format!("Report PDF download failed: {e}")),
   }
+}
+
+/// POST JSON then save response body (inspection report PDF).
+#[tauri::command]
+async fn download_post(
+  url: String,
+  filename: String,
+  authorization: Option<String>,
+  body: String,
+) -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    download_post_blocking(url, filename, authorization, body)
+  })
+  .await
+  .map_err(|e| format!("Download task failed: {e}"))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

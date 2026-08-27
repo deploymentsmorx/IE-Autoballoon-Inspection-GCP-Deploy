@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, Response
 
 from app.api.dependencies import require_perm
 from app.core.config import JOBS, UPLOADS
-from app.schemas import BalloonUpdate, ReportPayload
+from app.schemas import BalloonUpdate, ReportPayload, ReportRowsChunk
 from app.services.report_pdf import (
     build_report_pdf,
     characteristics_to_report_rows,
@@ -63,18 +63,26 @@ def _load_meta(job_id: str) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def _save_meta(job_id: str, meta: dict) -> None:
+def _save_meta(job_id: str, meta: dict, *, sync_files: bool = True) -> None:
     jd = _job_dir(job_id)
     (jd / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    # Mirror metadata → Neon; PDFs → S3 (or local) when configured
-    try:
-        from app import job_store
+    meta.setdefault("id", job_id)
+    if sync_files:
+        # Mirror metadata → Neon; PDFs → S3 (or local) when configured
+        try:
+            from app import job_store
 
-        meta.setdefault("id", job_id)
-        job_store.sync_job_files_to_storage(job_id, jd, meta)
-        (jd / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    except Exception:
-        # Never fail the API if Neon/S3 sync has a transient error
+            job_store.sync_job_files_to_storage(job_id, jd, meta)
+            (jd / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        except Exception:
+            try:
+                from app.job_store import upsert_job_from_meta
+
+                upsert_job_from_meta(meta)
+            except Exception:
+                pass
+    else:
+        # Fast path: metadata only (balloon edits without PDF regen)
         try:
             from app.job_store import upsert_job_from_meta
 
@@ -165,6 +173,10 @@ def _render_preview(pdf_path: Path, out_png: Path, page_index: int = 0, scale: f
                 tmp.unlink()
             except OSError:
                 pass
+
+
+def _input_preview_cache_path(jd: Path, page_index: int) -> Path:
+    return jd / f"input_preview_p{page_index}.png"
 
 
 def _render_preview_bytes(pdf_path: Path, page_index: int = 0, scale: float = 1.35) -> bytes:
@@ -973,6 +985,29 @@ def rebuild_report(job_id: str, user: dict = Depends(require_perm("write"))):
     _save_meta(job_id, meta)
     return {"count": len(new_rows), "rows": new_rows}
 
+@router.get("/{job_id}/page-geometry")
+def get_page_geometry(
+    job_id: str,
+    page: int = 0,
+    user: dict = Depends(require_perm("read")),
+):
+    """Lightweight page alignment data for canvas overlay (no full job payload)."""
+    meta = _load_meta(job_id)
+    jd = _job_dir(job_id)
+    idx = int(meta.get("active_file") or 0)
+    files = meta.get("files") or []
+    if not files or idx >= len(files):
+        raise HTTPException(status_code=404, detail="Job not found")
+    src = jd / files[idx]["path"]
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="Source PDF missing")
+    page_i = max(0, int(page))
+    try:
+        return _page_geometry(src, page_i)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Page geometry failed: {e}") from e
+
+
 @router.get("/{job_id}/preview/input")
 def preview_input(
     job_id: str,
@@ -990,16 +1025,32 @@ def preview_input(
     if not src.exists():
         raise HTTPException(status_code=404, detail="Source PDF missing")
     page_i = max(0, int(page))
+    cache = _input_preview_cache_path(jd, page_i)
+    src_mtime = src.stat().st_mtime
     # Images: serve cached PNG if present
     if files[idx].get("kind") == "image" and page_i == 0 and (jd / "input_preview.png").exists():
-        return Response((jd / "input_preview.png").read_bytes(), media_type="image/png")
+        return Response(
+            (jd / "input_preview.png").read_bytes(),
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
+    if cache.exists() and cache.stat().st_mtime >= src_mtime:
+        return Response(
+            cache.read_bytes(),
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
     try:
         png = _render_preview_bytes(src, page_i)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Preview render failed: {e}") from e
     if not png:
         raise HTTPException(status_code=500, detail="Preview render produced empty image")
-    return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
+    try:
+        _render_preview(src, cache, page_i)
+    except Exception:
+        pass
+    return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.get("/{job_id}/preview/balloon")
@@ -1052,6 +1103,64 @@ def download_source(job_id: str, user: dict = Depends(require_perm("read"))):
     return FileResponse(p, media_type="application/pdf", filename=files[idx]["name"])
 
 
+def _merge_report_row(prev: dict, row: dict, b: dict, zone_map: dict[int, str]) -> dict:
+    bno = int(b.get("balloon") or row.get("balloon") or 0)
+    row = dict(row)
+    row["instr_id"] = prev.get("instr_id", "")
+    row["instrument"] = prev.get("instrument", "")
+    row["unit"] = prev.get("unit") or row.get("unit") or "mm"
+    row["measured"] = prev.get("measured") or ["", ""]
+    row["remarks"] = prev.get("remarks", "")
+    row["tol_low"] = prev.get("tol_low") or row.get("tol_low", "")
+    row["tol_high"] = prev.get("tol_high") or row.get("tol_high", "")
+    zone_ref = zone_map.get(bno)
+    if zone_ref and not str(zone_ref).startswith("P"):
+        row["reference"] = zone_ref
+    elif prev.get("reference") and not str(prev.get("reference")).startswith("P"):
+        row["reference"] = prev.get("reference")
+    return row
+
+
+def _report_rows_fast(balloons: list[dict], old_rows: dict[int, dict]) -> list[dict]:
+    """Update report rows without re-scanning border grid (position-only edits)."""
+    new_rows = []
+    for i, b in enumerate(balloons, start=1):
+        bno = int(b.get("balloon") or i)
+        prev = old_rows.get(bno) or {}
+        if prev:
+            row = dict(prev)
+            row["sno"] = i
+            row["balloon"] = bno
+        else:
+            row = characteristics_to_report_rows([b], {})[0]
+            row["sno"] = i
+        text = str(b.get("text") or "")
+        if text:
+            fresh = characteristics_to_report_rows([b], {})[0]
+            row["nominal"] = fresh.get("nominal", "")
+            row["tol_low"] = fresh.get("tol_low", "")
+            row["tol_high"] = fresh.get("tol_high", "")
+        if not row.get("reference"):
+            row["reference"] = f"P{b.get('page', 1)}"
+        new_rows.append(row)
+    return new_rows
+
+
+def _report_rows_full(
+    balloons: list[dict],
+    old_rows: dict[int, dict],
+    zone_map: dict[int, str],
+) -> list[dict]:
+    base_rows = characteristics_to_report_rows(balloons, zone_map)
+    new_rows = []
+    for i, row in enumerate(base_rows, start=1):
+        b = balloons[i - 1]
+        prev = old_rows.get(int(b.get("balloon"))) or old_rows.get(i) or {}
+        row["sno"] = i
+        new_rows.append(_merge_report_row(prev, row, b, zone_map))
+    return new_rows
+
+
 @router.put("/{job_id}/balloons")
 def update_balloons(
     job_id: str,
@@ -1074,31 +1183,26 @@ def update_balloons(
     else:
         balloons = _ensure_balloon_leaders(balloons)
         meta["balloon_pdf_stale"] = True
-    # Keep report row alignment by balloon number; refresh zone reference from border grid
     old_rows = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
-    zone_map = _apply_zone_refs(src, balloons)
-    new_rows = []
-    for i, b in enumerate(balloons, start=1):
-        prev = old_rows.get(int(b["balloon"])) or old_rows.get(i) or {}
-        row = characteristics_to_report_rows([b], zone_map)[0]
-        row["sno"] = i
-        row["instr_id"] = prev.get("instr_id", "")
-        row["instrument"] = prev.get("instrument", "")
-        row["unit"] = prev.get("unit") or row.get("unit") or "mm"
-        row["measured"] = prev.get("measured") or ["", ""]
-        row["remarks"] = prev.get("remarks", "")
-        row["tol_low"] = prev.get("tol_low") or row.get("tol_low", "")
-        row["tol_high"] = prev.get("tol_high") or row.get("tol_high", "")
-        zone_ref = zone_map.get(int(b["balloon"]))
-        if zone_ref and not str(zone_ref).startswith("P"):
-            row["reference"] = zone_ref
-        elif prev.get("reference") and not str(prev.get("reference")).startswith("P"):
-            row["reference"] = prev.get("reference")
-        new_rows.append(row)
+    prev_balloons = meta.get("balloons") or []
+    prev_nos = {int(b.get("balloon") or 0) for b in prev_balloons}
+    new_nos = {int(b.get("balloon") or 0) for b in balloons}
+    added = [b for b in balloons if int(b.get("balloon") or 0) not in prev_nos]
+    count_changed = len(balloons) != len(prev_balloons)
+    if redraw_pdf:
+        zone_map = _apply_zone_refs(src, balloons)
+        new_rows = _report_rows_full(balloons, old_rows, zone_map)
+    elif count_changed and added:
+        zone_map = _apply_zone_refs(src, added) if src.exists() else {}
+        new_rows = _report_rows_full(balloons, old_rows, zone_map)
+    elif count_changed:
+        new_rows = _report_rows_full(balloons, old_rows, {})
+    else:
+        new_rows = _report_rows_fast(balloons, old_rows)
     meta["balloons"] = balloons
     meta["report_rows"] = new_rows
     _ensure_measure_columns(meta)
-    _save_meta(job_id, meta)
+    _save_meta(job_id, meta, sync_files=redraw_pdf)
     return {"count": len(balloons), "balloons": balloons, "report_rows": new_rows}
 
 
@@ -1127,7 +1231,7 @@ def create_balloon(
     balloons = list(meta.get("balloons") or [])
     next_no = _next_balloon_no(balloons)
     bx, by = _default_balloon_leader(x, y, width, height)
-    balloons.append({
+    new_balloon = {
         "balloon": next_no,
         "page": page,
         "text": cleaned,
@@ -1139,7 +1243,8 @@ def create_balloon(
         "pattern": "manual",
         "bx": bx,
         "by": by,
-    })
+    }
+    balloons.append(new_balloon)
     # learn when we have useful text
     if cleaned:
         try:
@@ -1147,8 +1252,18 @@ def create_balloon(
             add_feedback(text=cleaned, label="dimension", page=page, x=x, y=y, source="manual")
         except Exception:
             pass
-    body = BalloonUpdate(balloons=balloons)
-    return update_balloons(job_id, body, user, redraw_pdf=False)
+    zone_map = _apply_zone_refs(src, [new_balloon]) if src and src.exists() else {}
+    row = characteristics_to_report_rows([new_balloon], zone_map)[0]
+    row["sno"] = len(balloons)
+    rows = list(meta.get("report_rows") or [])
+    rows.append(row)
+    meta["balloons"] = balloons
+    meta["report_rows"] = rows
+    meta["status"] = "ballooned"
+    meta["balloon_pdf_stale"] = True
+    _ensure_measure_columns(meta)
+    _save_meta(job_id, meta, sync_files=False)
+    return {"count": len(balloons), "balloons": balloons, "report_rows": rows}
 
 
 @router.delete("/{job_id}/balloons/{balloon_no}")
@@ -1158,11 +1273,33 @@ def delete_balloon(
     user: dict = Depends(require_perm("write")),
 ):
     meta = _load_meta(job_id)
-    balloons = [b for b in (meta.get("balloons") or []) if int(b.get("balloon")) != int(balloon_no)]
-    # Compact 1..N after delete so the sequence stays contiguous
-    balloons = _renumber(balloons, compact=True)
-    body = BalloonUpdate(balloons=balloons)
-    return update_balloons(job_id, body, user, redraw_pdf=False)
+    old_balloons = sorted(meta.get("balloons") or [], key=lambda x: int(x.get("balloon") or 0))
+    old_rows = list(meta.get("report_rows") or [])
+    remove_idx = next(
+        (i for i, b in enumerate(old_balloons) if int(b.get("balloon") or 0) == int(balloon_no)),
+        None,
+    )
+    if remove_idx is None:
+        raise HTTPException(status_code=404, detail="Balloon not found")
+    old_balloons.pop(remove_idx)
+    if remove_idx < len(old_rows):
+        old_rows.pop(remove_idx)
+    balloons = _renumber(old_balloons, compact=True)
+    if len(old_rows) == len(balloons):
+        for i, (b, row) in enumerate(zip(balloons, old_rows), start=1):
+            b["balloon"] = i
+            row["sno"] = i
+            row["balloon"] = i
+        new_rows = old_rows
+    else:
+        old_map = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
+        new_rows = _report_rows_fast(balloons, old_map)
+    meta["balloons"] = balloons
+    meta["report_rows"] = new_rows
+    meta["balloon_pdf_stale"] = True
+    _ensure_measure_columns(meta)
+    _save_meta(job_id, meta, sync_files=False)
+    return {"count": len(balloons), "balloons": balloons, "report_rows": new_rows}
 
 
 @router.post("/{job_id}/title-extract")
@@ -1202,6 +1339,7 @@ def save_report(
     job_id: str,
     body: ReportPayload,
     local_only: bool = Query(False),
+    headers_only: bool = Query(False),
     user: dict = Depends(require_perm("write")),
 ):
     meta = _load_meta(job_id)
@@ -1217,13 +1355,63 @@ def save_report(
     meta["supplier_name"] = body.supplier_name
     meta["customer_name"] = body.customer_name
     meta["authorized_signatory"] = body.authorized_signatory
-    meta["report_rows"] = [r.model_dump() for r in body.rows]
-    meta["measure_columns"] = [c.model_dump() for c in body.measure_columns]
+    if not headers_only:
+        if body.rows:
+            meta["report_rows"] = [r.model_dump() for r in body.rows]
+        if body.measure_columns:
+            meta["measure_columns"] = [c.model_dump() for c in body.measure_columns]
+    elif body.measure_columns:
+        meta["measure_columns"] = [c.model_dump() for c in body.measure_columns]
+    # Invalidate cached PDF when report data changes
+    cached = _job_dir(job_id) / "inspection_report.pdf"
+    if cached.exists():
+        try:
+            cached.unlink()
+        except OSError:
+            pass
     if local_only:
         _save_meta_local(job_id, meta)
     else:
         _save_meta(job_id, meta)
-    return {"ok": True, "rows": len(meta["report_rows"])}
+    return {"ok": True, "rows": len(meta.get("report_rows") or [])}
+
+
+@router.put("/{job_id}/report/rows")
+def save_report_rows_chunk(
+    job_id: str,
+    body: ReportRowsChunk,
+    local_only: bool = Query(True),
+    user: dict = Depends(require_perm("write")),
+):
+    """Upload report rows in chunks (keeps desktop UI responsive for 3000+ rows)."""
+    meta = _load_meta(job_id)
+    existing = list(meta.get("report_rows") or [])
+    chunk = [r.model_dump() for r in body.rows]
+    offset = max(0, int(body.offset))
+    if body.replace and offset == 0:
+        existing = chunk
+    elif offset >= len(existing):
+        existing.extend(chunk)
+    else:
+        end = offset + len(chunk)
+        existing[offset:end] = chunk
+        if end < len(existing) and body.done:
+            existing = existing[:end]
+    meta["report_rows"] = existing
+    if body.measure_columns is not None:
+        meta["measure_columns"] = [c.model_dump() for c in body.measure_columns]
+    if body.done:
+        cached = _job_dir(job_id) / "inspection_report.pdf"
+        if cached.exists():
+            try:
+                cached.unlink()
+            except OSError:
+                pass
+    if local_only:
+        _save_meta_local(job_id, meta)
+    else:
+        _save_meta(job_id, meta)
+    return {"ok": True, "rows": len(existing), "offset": offset}
 
 
 @router.get("/{job_id}/report/status")
@@ -1241,9 +1429,24 @@ def report_cell_status(
 @router.get("/{job_id}/report/pdf")
 def download_report_pdf(job_id: str, user: dict = Depends(require_perm("read"))):
     meta = _load_meta(job_id)
+    jd = _job_dir(job_id)
+    out_pdf = jd / "inspection_report.pdf"
+    meta_path = jd / "meta.json"
+    # Serve cached PDF when it is newer than meta (avoids 20s+ rebuild on repeat download)
+    if (
+        out_pdf.exists()
+        and meta_path.exists()
+        and out_pdf.stat().st_mtime >= meta_path.stat().st_mtime
+        and out_pdf.stat().st_size > 1000
+    ):
+        return FileResponse(
+            out_pdf,
+            media_type="application/pdf",
+            filename=f"{job_id}_inspection_report.pdf",
+            headers={"Cache-Control": "no-store"},
+        )
     rows = meta.get("report_rows") or []
     if not rows and meta.get("balloons"):
-        jd = _job_dir(job_id)
         idx = int(meta.get("active_file") or 0)
         files = meta.get("files") or []
         src = jd / files[idx]["path"] if files else None
@@ -1268,8 +1471,6 @@ def download_report_pdf(job_id: str, user: dict = Depends(require_perm("read")))
         "rows": rows,
         "measure_columns": meta.get("measure_columns") or default_measure_columns(),
     }
-    jd = _job_dir(job_id)
-    out_pdf = jd / "inspection_report.pdf"
     try:
         pdf = build_report_pdf(payload)
         out_pdf.write_bytes(pdf)

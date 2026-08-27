@@ -783,7 +783,11 @@ export default function BalloonCanvas({
         ) : !hasImage || failed ? (
           <div className="placeholder">Preview unavailable.</div>
         ) : (
-          <canvas
+          <>
+            {loading ? (
+              <div className="placeholder viewer-loading-overlay">Loading page…</div>
+            ) : null}
+            <canvas
             ref={canvasRef}
             className="balloon-canvas viewer-canvas"
             style={{ cursor, touchAction: "none" }}
@@ -793,6 +797,7 @@ export default function BalloonCanvas({
             onPointerCancel={onPointerUp}
             onContextMenu={(e) => e.preventDefault()}
           />
+          </>
         )}
       </div>
     </div>
