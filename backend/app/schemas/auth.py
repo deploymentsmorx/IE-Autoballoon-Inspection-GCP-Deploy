@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field
 class LoginRequest(BaseModel):
     username: str
     password: str
+    # Sent by the desktop EXE only — web logins omit these and skip the check.
+    device_id: str | None = None
+    hostname: str | None = None
 
 
 class OrgCreate(BaseModel):

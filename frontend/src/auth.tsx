@@ -6,7 +6,7 @@ type AuthCtx = {
   token: string | null;
   /** False until the first /me check finishes (prevents refresh bounce to /admin). */
   ready: boolean;
-  login: (u: string, p: string) => Promise<void>;
+  login: (u: string, p: string, device?: { device_id: string; hostname: string }) => Promise<void>;
   logout: () => void;
   refresh: () => Promise<void>;
   clearJob: () => void;
@@ -80,8 +80,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const login = async (username: string, password: string) => {
-    const res = await api.login(username, password);
+  const login = async (
+    username: string,
+    password: string,
+    device?: { device_id: string; hostname: string },
+  ) => {
+    const res = await api.login(username, password, device);
     // Fresh login → no leftover drawing from a previous session
     clearJobSession();
     localStorage.setItem("smorx_token", res.token);

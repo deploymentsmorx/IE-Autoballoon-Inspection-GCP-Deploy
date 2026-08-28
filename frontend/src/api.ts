@@ -219,10 +219,10 @@ async function saveBlob(blob: Blob, filename: string): Promise<string> {
 
 export const api = {
   apiBase: API,
-  login: (username: string, password: string) =>
+  login: (username: string, password: string, device?: { device_id: string; hostname: string }) =>
     req<{ token: string; user: User }>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password })}),
+      body: JSON.stringify({ username, password, ...device })}),
   activate: (body: {
     license_key: string;
     username: string;

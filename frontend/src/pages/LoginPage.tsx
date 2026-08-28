@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { api } from "../api";
-import { isDesktopApp, isLicenseActivated } from "../device";
+import { getDeviceInfo, isDesktopApp, isLicenseActivated } from "../device";
 import { APP_TITLE } from "../constants/branding";
 
 export default function LoginPage() {
@@ -45,7 +45,8 @@ export default function LoginPage() {
     setBusy(true);
     setErr("");
     try {
-      await login(username, password);
+      const device = desktop ? await getDeviceInfo() : undefined;
+      await login(username, password, device);
       const me = await api.me();
       if (me.must_change_password) {
         nav("/change-password");

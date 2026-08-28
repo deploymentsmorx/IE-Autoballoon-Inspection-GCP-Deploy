@@ -47,6 +47,37 @@ def device_status(device_id: str) -> dict:
         }
 
 
+def verify_device_for_login(customer_id: str, device_id: str, hostname: str) -> None:
+    """
+    Enforce that a desktop login comes from the same device_id + hostname
+    recorded when this customer's license was activated. Raises 403 on any
+    mismatch or missing/inactive installation.
+    """
+    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
+        raise HTTPException(status_code=503, detail="License server (Neon) unavailable")
+
+    device_id = device_id.strip().upper()
+    hostname = hostname.strip()
+
+    with dbmod.SessionLocal() as db:
+        inst = db.scalar(
+            select(Installation).where(
+                Installation.customer_id == customer_id,
+                Installation.status == "Active",
+            )
+        )
+        if inst is None:
+            raise HTTPException(
+                status_code=403,
+                detail="No active installation registered for this account — activate on this device first",
+            )
+        if inst.device_id != device_id or inst.hostname.strip().lower() != hostname.lower():
+            raise HTTPException(
+                status_code=403,
+                detail="This device does not match the registered installation for this account",
+            )
+
+
 def activate_installation(
     *,
     license_key: str,

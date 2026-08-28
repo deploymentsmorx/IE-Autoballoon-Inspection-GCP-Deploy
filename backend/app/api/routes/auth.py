@@ -38,6 +38,12 @@ def login(body: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid email/username or password")
     if not user.get("active") and user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Account inactive — ask super admin")
+    # Desktop EXE sends device_id/hostname — must match the device this
+    # account's license was activated on. Web logins omit these and skip it.
+    if body.device_id and user.get("customer_id"):
+        license_service.verify_device_for_login(
+            user["customer_id"], body.device_id, body.hostname or ""
+        )
     token = create_token(user)
     return {"token": token, "user": _user_payload(user)}
 

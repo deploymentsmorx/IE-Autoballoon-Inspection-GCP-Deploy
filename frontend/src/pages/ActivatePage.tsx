@@ -68,7 +68,10 @@ export default function ActivatePage() {
         installation_id: res.installation.installation_id,
       });
       localStorage.setItem("smorx_token", res.token);
-      await login(username.trim(), password);
+      await login(username.trim(), password, {
+        device_id: deviceId.trim().toUpperCase(),
+        hostname: hostname.trim(),
+      });
       const me = await api.me();
       if (me.must_change_password) {
         nav("/change-password");
