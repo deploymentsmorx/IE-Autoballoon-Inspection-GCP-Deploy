@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta, timezone
-
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 
@@ -75,14 +73,13 @@ def list_orgs() -> list[dict]:
 
 def create_org(name: str) -> dict:
     oid = f"org-{secrets.token_hex(4)}"
-    trial = (datetime.now(timezone.utc) + timedelta(days=30)).date()
     if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
         org = Organization(
             id=oid,
             name=name.strip(),
             tenant_id=oid.upper(),
             status="Active",
-            trial_ends=trial,
+            trial_ends=None,
         )
         with dbmod.SessionLocal() as db:
             db.add(org)
@@ -94,7 +91,7 @@ def create_org(name: str) -> dict:
         "name": name.strip(),
         "tenant_id": oid.upper(),
         "status": "Active",
-        "trial_ends": trial.isoformat(),
+        "trial_ends": None,
     }
     db["organizations"].append(org)
     local_store.save(db)
