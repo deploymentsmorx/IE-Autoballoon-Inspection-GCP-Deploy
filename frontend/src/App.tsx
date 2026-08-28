@@ -47,7 +47,13 @@ function AuthBoot({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function Private({ children }: { children: React.ReactNode }) {
+function Private({
+  children,
+  adminOnly = false,
+}: {
+  children: React.ReactNode;
+  adminOnly?: boolean;
+}) {
   const { user, ready } = useAuth();
   const [desktop, setDesktop] = useState(false);
   const [checked, setChecked] = useState(false);
@@ -71,6 +77,9 @@ function Private({ children }: { children: React.ReactNode }) {
   }
   if (!user) return <Navigate to="/login" replace />;
   if (user.must_change_password) return <Navigate to="/change-password" replace />;
+  // Packaged desktop EXE is for customer field use only — the admin console
+  // is web-only, even if the activated account happens to carry that role.
+  if (adminOnly && desktop) return <Navigate to="/app" replace />;
   return <>{children}</>;
 }
 
@@ -99,7 +108,7 @@ export default function App() {
               <Route
                 path="/admin"
                 element={
-                  <Private>
+                  <Private adminOnly>
                     <AdminPage />
                   </Private>
                 }
@@ -148,6 +157,9 @@ function HomeRedirect() {
   }
   if (!user) return <Navigate to="/login" replace />;
   if (user.must_change_password) return <Navigate to="/change-password" replace />;
+  // The packaged desktop app is for customer field use only — never land on
+  // the super-admin console there, regardless of role or remembered route.
+  if (desktop) return <Navigate to="/app" replace />;
   const last = sessionStorage.getItem(LAST_ROUTE_KEY);
   if (last === "/app" || last === "/admin") return <Navigate to={last} replace />;
   if (user.role === "super_admin") return <Navigate to="/admin" replace />;

@@ -30,8 +30,8 @@ steps:
       - "--allow-unauthenticated"
       - "--port=9686"
       - "--min-instances=1"
-      - "--memory=2Gi"
-      - "--cpu=2"
+      - "--memory=8Gi"
+      - "--cpu=4"
       - "--timeout=3600"
       - "--set-secrets=JWT_SECRET=JWT_SECRET:latest,PWD_PEPPER=PWD_PEPPER:latest,DATABASE_URL=DATABASE_URL:latest"
     id: deploy-backend
