@@ -38,7 +38,7 @@ app.add_middleware(
         "https://localhost",
         "http://localhost",
         *cors_origin_list(),
-        "https://autoballoon-web-827464408309.us-central1.run.app",
+        "https://autoballoon-web-135072000552.us-central1.run.app",
         *_extra_origins,
     ],
     allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|tauri\.localhost)(:\d+)?",
