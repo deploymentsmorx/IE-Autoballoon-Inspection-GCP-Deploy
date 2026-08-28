@@ -91,7 +91,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
-    const keys = Object.keys(localStorage).filter((k) => k.startsWith("smorx_"));
+    // Keep device/license-activation keys — logging out must not un-activate
+    // the desktop install. Otherwise "Sign in" after logout wrongly bounces
+    // an already-activated machine back to the Activate-license page.
+    const keep = new Set([
+      "smorx_device_id",
+      "smorx_hostname",
+      "smorx_license_activated",
+      "smorx_license_key",
+      "smorx_customer_id",
+      "smorx_installation_id",
+    ]);
+    const keys = Object.keys(localStorage).filter(
+      (k) => k.startsWith("smorx_") && !keep.has(k),
+    );
     for (const k of keys) localStorage.removeItem(k);
     setToken(null);
     setUser(null);
