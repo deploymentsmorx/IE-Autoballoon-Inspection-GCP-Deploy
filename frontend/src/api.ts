@@ -1,3 +1,5 @@
+import { isDesktopApp } from "./device";
+
 const ENV_API = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") || "";
 const LOCAL_API_FALLBACKS = ["http://127.0.0.1:9686", "http://localhost:9686"];
 const isLocalApiUrl = (url: string) => /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(url);
@@ -151,18 +153,6 @@ async function fetchBlob(
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return res.blob();
-}
-
-/** True when running inside the Tauri desktop EXE (WebView2). */
-async function isDesktopApp(): Promise<boolean> {
-  if (typeof window === "undefined") return false;
-  if ("__TAURI_INTERNALS__" in window || "__TAURI__" in window) return true;
-  try {
-    const { isTauri } = await import("@tauri-apps/api/core");
-    return await isTauri();
-  } catch {
-    return false;
-  }
 }
 
 /**

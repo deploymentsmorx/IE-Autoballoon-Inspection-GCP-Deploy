@@ -8,8 +8,8 @@ import { APP_TITLE } from "../constants/branding";
 export default function LoginPage() {
   const { user, ready, login } = useAuth();
   const nav = useNavigate();
-  const [username, setUsername] = useState("admin@smorx.ai");
-  const [password, setPassword] = useState("admin123");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);

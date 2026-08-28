@@ -75,9 +75,11 @@ export async function verifyActivationWithServer(): Promise<boolean> {
 }
 
 export async function isDesktopApp(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  if ("__TAURI_INTERNALS__" in window || "__TAURI__" in window) return true;
   try {
     const { isTauri } = await import("@tauri-apps/api/core");
-    return isTauri();
+    return await isTauri();
   } catch {
     return false;
   }
