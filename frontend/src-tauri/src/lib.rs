@@ -36,14 +36,32 @@ fn read_windows_machine_guid() -> Option<String> {
   // Read the registry value directly via the Win32 API instead of spawning
   // `reg.exe` and text-parsing its output — the subprocess approach was
   // fragile (locale-dependent formatting, and some antivirus/EDR software
-  // blocks child processes querying MachineGuid as a fingerprinting IOC),
-  // which was surfacing as a wrong "fallback-" device ID on real machines.
+  // blocks child processes querying these values as a fingerprinting IOC).
   use winreg::enums::HKEY_LOCAL_MACHINE;
   use winreg::RegKey;
 
   let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-  let key = hklm.open_subkey(r"SOFTWARE\Microsoft\Cryptography").ok()?;
-  let guid: String = key.get_value("MachineGuid").ok()?;
+
+  // Prefer SQMClient\MachineId — this is the same "Device ID" shown in
+  // Windows Settings > System > About, so it matches what a customer can
+  // independently read off their own PC and report to an admin.
+  let sqm = hklm
+    .open_subkey(r"SOFTWARE\Microsoft\SQMClient")
+    .ok()
+    .and_then(|key| key.get_value::<String, _>("MachineId").ok());
+  if let Some(id) = sqm {
+    let id = id.trim().trim_start_matches('{').trim_end_matches('}');
+    if !id.is_empty() {
+      return Some(id.to_string());
+    }
+  }
+
+  // Fall back to Cryptography\MachineGuid if SQMClient is unavailable.
+  let guid = hklm
+    .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
+    .ok()?
+    .get_value::<String, _>("MachineGuid")
+    .ok()?;
   let guid = guid.trim();
   if guid.is_empty() {
     None
