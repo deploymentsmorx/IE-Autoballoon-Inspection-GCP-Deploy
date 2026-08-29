@@ -18,17 +18,13 @@ export default function ActivatePage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const savedId = localStorage.getItem("smorx_device_id");
-    const savedHost = localStorage.getItem("smorx_hostname");
-    if (savedId) setDeviceId(savedId);
-    if (savedHost) setHostname(savedHost);
+    // Always read the real device identity from this machine — never let the
+    // user type it in, or a copied/shared device_id could activate on any PC.
+    getDeviceInfo().then((info) => {
+      setDeviceId(info.device_id);
+      setHostname(info.hostname);
+    });
   }, []);
-
-  const detectDevice = async () => {
-    const info = await getDeviceInfo();
-    setDeviceId(info.device_id);
-    setHostname(info.hostname);
-  };
 
   if (!ready) {
     return (
@@ -142,28 +138,15 @@ export default function ActivatePage() {
             </div>
           </div>
           <div className="field">
-            <label>Device ID</label>
-            <input
-              value={deviceId}
-              onChange={(e) => setDeviceId(e.target.value)}
-              placeholder="DEV-… (from SmorX admin)"
-              required
-            />
+            <label>Device ID (auto-detected, cannot be edited)</label>
+            <input value={deviceId || "Detecting…"} readOnly disabled />
           </div>
           <div className="field">
-            <label>Host name</label>
-            <input
-              value={hostname}
-              onChange={(e) => setHostname(e.target.value)}
-              placeholder="DESKTOP-… (from SmorX admin)"
-              required
-            />
+            <label>Host name (auto-detected, cannot be edited)</label>
+            <input value={hostname || "Detecting…"} readOnly disabled />
           </div>
-          <button type="button" className="btn btn-ghost btn-sm mb" onClick={detectDevice}>
-            Detect from this PC (optional)
-          </button>
           {err && <div className="error">{err}</div>}
-          <button className="btn btn-primary" disabled={busy}>
+          <button className="btn btn-primary" disabled={busy || !deviceId || !hostname}>
             {busy ? "Activating…" : "Activate"}
           </button>
         </form>
