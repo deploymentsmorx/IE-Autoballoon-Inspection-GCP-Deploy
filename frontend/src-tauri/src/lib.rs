@@ -33,29 +33,23 @@ fn get_device_info() -> DeviceInfo {
 
 #[cfg(windows)]
 fn read_windows_machine_guid() -> Option<String> {
-  use std::process::Command;
-  let output = Command::new("reg")
-    .args([
-      "query",
-      r"HKLM\SOFTWARE\Microsoft\Cryptography",
-      "/v",
-      "MachineGuid",
-    ])
-    .output()
-    .ok()?;
-  if !output.status.success() {
-    return None;
+  // Read the registry value directly via the Win32 API instead of spawning
+  // `reg.exe` and text-parsing its output — the subprocess approach was
+  // fragile (locale-dependent formatting, and some antivirus/EDR software
+  // blocks child processes querying MachineGuid as a fingerprinting IOC),
+  // which was surfacing as a wrong "fallback-" device ID on real machines.
+  use winreg::enums::HKEY_LOCAL_MACHINE;
+  use winreg::RegKey;
+
+  let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+  let key = hklm.open_subkey(r"SOFTWARE\Microsoft\Cryptography").ok()?;
+  let guid: String = key.get_value("MachineGuid").ok()?;
+  let guid = guid.trim();
+  if guid.is_empty() {
+    None
+  } else {
+    Some(guid.to_string())
   }
-  let text = String::from_utf8_lossy(&output.stdout);
-  for line in text.lines() {
-    if line.contains("MachineGuid") {
-      let parts: Vec<_> = line.split_whitespace().collect();
-      if let Some(guid) = parts.last() {
-        return Some(guid.trim().to_string());
-      }
-    }
-  }
-  None
 }
 
 #[cfg(not(windows))]

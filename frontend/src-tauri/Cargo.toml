@@ -21,3 +21,6 @@ dirs = "6"
 ureq = "2.12"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
