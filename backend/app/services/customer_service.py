@@ -148,6 +148,12 @@ def add_approved_device(customer_id: str, device_id: str, hostname: str) -> dict
     hostname = hostname.strip()
     if not device_id or not hostname:
         raise HTTPException(status_code=400, detail="device_id and hostname required")
+    if not device_id.startswith("DEV-"):
+        raise HTTPException(
+            status_code=400,
+            detail="device_id must start with 'DEV-' — copy it exactly from the "
+            "customer's Activate screen, don't type a raw machine GUID",
+        )
 
     with dbmod.SessionLocal() as db:
         if not db.get(Customer, customer_id):

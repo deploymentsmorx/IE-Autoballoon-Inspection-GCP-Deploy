@@ -201,21 +201,21 @@ export default function AdminPage() {
               />
             </div>
             <div className="field">
-              <label>Device ID (give to customer)</label>
+              <label>Device ID (copy exactly from customer's Activate screen)</label>
               <input
                 style={inputStyle}
                 value={deviceId}
                 onChange={(e) => setDeviceId(e.target.value)}
-                placeholder="DEV-D4678AB3-…"
+                placeholder="DEV-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX — must include DEV- prefix"
               />
             </div>
             <div className="field">
-              <label>Host name (give to customer)</label>
+              <label>Host name (copy exactly from customer's Activate screen)</label>
               <input
                 style={inputStyle}
                 value={hostname}
                 onChange={(e) => setHostname(e.target.value)}
-                placeholder="DESKTOP-8DDCU07"
+                placeholder="e.g. DESKTOP-8DDCU07"
               />
             </div>
             <div className="field">
