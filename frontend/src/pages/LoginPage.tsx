@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { api } from "../api";
-import { getDeviceInfo, isDesktopApp, isLicenseActivated } from "../device";
+import { clearLicenseActivation, getDeviceInfo, isDesktopApp, isLicenseActivated } from "../device";
 import { APP_TITLE } from "../constants/branding";
 
 export default function LoginPage() {
@@ -54,7 +54,20 @@ export default function LoginPage() {
       }
       nav(me.role === "super_admin" ? "/admin" : "/app");
     } catch (ex: any) {
-      setErr(ex.message || "Login failed");
+      const msg = ex.message || "Login failed";
+      // Server has no (matching) installation for this device — usually because
+      // it was cleared/reassigned server-side. The local "activated" flag is now
+      // stale and blocking the Activate screen, so drop it and send them there.
+      if (
+        desktop &&
+        (msg.includes("No active installation registered") ||
+          msg.includes("does not match the registered installation"))
+      ) {
+        clearLicenseActivation();
+        nav("/activate", { replace: true });
+        return;
+      }
+      setErr(msg);
     } finally {
       setBusy(false);
     }

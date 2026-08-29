@@ -36,6 +36,19 @@ export function isLicenseActivated(): boolean {
   return localStorage.getItem(ACTIVATED_KEY) === "1";
 }
 
+/**
+ * Clear the local "activated" flag when the server rejects this device at
+ * login (installation missing or reassigned elsewhere) — otherwise the app
+ * is stuck believing it's activated while the server has nothing to match
+ * against, and the Activate screen becomes unreachable.
+ */
+export function clearLicenseActivation(): void {
+  localStorage.removeItem(ACTIVATED_KEY);
+  localStorage.removeItem("smorx_license_key");
+  localStorage.removeItem("smorx_customer_id");
+  localStorage.removeItem("smorx_installation_id");
+}
+
 export function markLicenseActivated(payload: {
   license_key: string;
   customer_id?: string;
