@@ -107,7 +107,15 @@ def _mark_quality(marks: list[tuple[str, float]], *, kind: str) -> tuple[int, li
     positions = [pos for _, pos in seq]
     good = 0
     for i in range(1, len(seq)):
-        if (keys[i] - keys[i - 1]) * (positions[i] - positions[i - 1]) > 0:
+        dk = keys[i] - keys[i - 1]
+        dp = positions[i] - positions[i - 1]
+        if dp == 0:
+            continue
+        # Numbers increase along the edge; letters may run A→L or L→A (Tata / ISO borders)
+        if kind == "letter":
+            if dk != 0:
+                good += 1
+        elif dk * dp > 0:
             good += 1
     if good < max(1, len(seq) - 2):
         return 0, seq
@@ -287,6 +295,106 @@ def _cached_marks(page: fitz.Page, *, cache_key: tuple[str, float, int] | None):
     return marks
 
 
+def _marks_tuple_quality(marks: tuple) -> int:
+    """Score grid usability; 0 = do not use (partial/noisy marks from drawing text)."""
+    letter_marks, number_marks, _, _ = marks
+    if len(letter_marks) < 8 or len(number_marks) < 8:
+        return 0
+    q_let, seq_let = _mark_quality(letter_marks, kind="letter")
+    q_num, seq_num = _mark_quality(number_marks, kind="number")
+    if q_let <= 0 or q_num <= 0:
+        return 0
+    return q_let + q_num + len(seq_let) + len(seq_num)
+
+
+def _scale_marks_to_page(
+    marks: tuple,
+    *,
+    from_w: float,
+    from_h: float,
+    to_w: float,
+    to_h: float,
+) -> tuple:
+    """Scale a grid template from one page size to another (e.g. A0 → A1 half-size insert)."""
+    letter_marks, number_marks, letter_axis, number_axis = marks
+    sx = to_w / from_w if from_w > 0 else 1.0
+    sy = to_h / from_h if from_h > 0 else 1.0
+
+    def scale_list(mlist: list[tuple[str, float]], axis: str) -> list[tuple[str, float]]:
+        s = sx if axis == "x" else sy
+        return [(lab, pos * s) for lab, pos in mlist]
+
+    return (
+        scale_list(letter_marks, letter_axis),
+        scale_list(number_marks, number_axis),
+        letter_axis,
+        number_axis,
+    )
+
+
+def _build_best_grid_template(
+    doc: fitz.Document,
+    *,
+    path_key: str,
+    mtime: float,
+) -> tuple[tuple, float, float] | None:
+    """Best full border grid found anywhere in the PDF (shared x/y zone axes)."""
+    best: tuple[tuple, float, float] | None = None
+    best_q = 0
+    for page_i in range(doc.page_count):
+        page = doc[page_i]
+        marks = _cached_marks(page, cache_key=(path_key, mtime, page_i))
+        q = _marks_tuple_quality(marks)
+        if q > best_q:
+            best_q = q
+            best = (marks, float(page.rect.width), float(page.rect.height))
+    return best
+
+
+def _effective_marks_for_page(
+    page: fitz.Page,
+    local_marks: tuple,
+    template: tuple[tuple, float, float] | None,
+) -> tuple:
+    """
+    Use local border marks when the full A–L / 1–11 frame is readable;
+    otherwise reuse the best grid from another page, scaled to this page size.
+    """
+    if _marks_tuple_quality(local_marks) > 0:
+        return local_marks
+    if template is None:
+        return local_marks
+    tpl_marks, tpl_w, tpl_h = template
+    return _scale_marks_to_page(
+        tpl_marks,
+        from_w=tpl_w,
+        from_h=tpl_h,
+        to_w=float(page.rect.width),
+        to_h=float(page.rect.height),
+    )
+
+
+def _zone_label(marks: list[tuple[str, float]], value: float) -> str:
+    """
+    Map coordinate to grid zone by column/row boundaries (midpoints between marks).
+    More stable than nearest-centre when the dim sits near a zone line.
+    """
+    if not marks:
+        return ""
+    seq = sorted(marks, key=lambda x: x[1])
+    if len(seq) == 1:
+        return seq[0][0]
+    if value <= (seq[0][1] + seq[1][1]) / 2.0:
+        return seq[0][0]
+    if value >= (seq[-2][1] + seq[-1][1]) / 2.0:
+        return seq[-1][0]
+    for i in range(len(seq) - 1):
+        mid = (seq[i][1] + seq[i + 1][1]) / 2.0
+        if value <= mid:
+            return seq[i][0]
+    return seq[-1][0]
+
+
 def _nearest_label(marks: list[tuple[str, float]], value: float) -> str:
     if not marks:
         return ""
@@ -300,16 +408,27 @@ def _nearest_label(marks: list[tuple[str, float]], value: float) -> str:
     return best
 
 
-def _balloon_point(b: dict) -> tuple[float, float]:
-    """Prefer leader circle — matches inspector 'nearest balloon' zone reading."""
+def _dim_reference_point(b: dict) -> tuple[float, float]:
+    """
+    Grid zone from the dimension dotted-square (text box), never the balloon circle.
+    Uses tx/ty (arrow anchor / dim centre) when stored, else centre of x,y,width,height.
+    """
+    if b.get("tx") is not None and b.get("ty") is not None:
+        return float(b["tx"]), float(b["ty"])
+    x = float(b.get("x") or 0)
+    y = float(b.get("y") or 0)
+    w = float(b.get("width") or 0)
+    h = float(b.get("height") or 0)
+    if w > 0 or h > 0:
+        return x + w / 2.0, y + (h / 2.0 if h > 0 else 6.0)
     if b.get("bx") is not None and b.get("by") is not None:
         return float(b["bx"]), float(b["by"])
-    h = float(b.get("height") or 0)
-    if b.get("x") is not None and b.get("y") is not None:
-        # Use left-center of the dim text (not geometric center) so borderline
-        # glyphs near a zone mid-line stay with the mark they sit under.
-        return float(b["x"]), float(b["y"]) + h / 2.0
-    return 0.0, 0.0
+    return x, y
+
+
+def _balloon_point(b: dict) -> tuple[float, float]:
+    """Alias used by zone lookup — always the dim-box reference, not leader circle."""
+    return _dim_reference_point(b)
 
 
 def _ref_from_marks(
@@ -324,8 +443,8 @@ def _ref_from_marks(
 ) -> str:
     lx = x if letter_axis == "x" else y
     nx = x if number_axis == "x" else y
-    letter = _nearest_label(letter_marks, lx)
-    number = _nearest_label(number_marks, nx)
+    letter = _zone_label(letter_marks, lx)
+    number = _zone_label(number_marks, nx)
     if letter and number:
         return f"{letter}-{number}"
     if letter:
@@ -366,6 +485,7 @@ def zone_references_for_balloons(pdf_path: Path, balloons: list[dict]) -> dict[i
         except OSError:
             mtime = 0.0
         path_key = str(Path(pdf_path).resolve())
+        template = _build_best_grid_template(doc, path_key=path_key, mtime=mtime)
         page_cache: dict[int, tuple] = {}
 
         for b in balloons:
@@ -376,13 +496,14 @@ def zone_references_for_balloons(pdf_path: Path, balloons: list[dict]) -> dict[i
                     continue
                 if page_i not in page_cache:
                     page = doc[page_i]
-                    marks = _cached_marks(page, cache_key=(path_key, mtime, page_i))
+                    local = _cached_marks(page, cache_key=(path_key, mtime, page_i))
+                    marks = _effective_marks_for_page(page, local, template)
                     page_cache[page_i] = (page, marks)
 
-                page, marks = page_cache[page_i]
+                _page, marks = page_cache[page_i]
                 letter_marks, number_marks, letter_axis, number_axis = marks
                 mx, my = _balloon_point(b)
-                out[bno] = _ref_from_marks(
+                ref = _ref_from_marks(
                     letter_marks,
                     number_marks,
                     letter_axis,
@@ -391,6 +512,8 @@ def zone_references_for_balloons(pdf_path: Path, balloons: list[dict]) -> dict[i
                     my,
                     page_no=page_i + 1,
                 )
+                out[(page_i + 1, bno)] = ref
+                out[bno] = ref  # continuous numbering (unique bno)
             except Exception:
                 continue
     finally:

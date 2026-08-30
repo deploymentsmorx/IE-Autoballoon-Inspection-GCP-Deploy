@@ -331,9 +331,9 @@ export const api = {
       method: "POST",
       body: fd});
   },
-  runBalloon: (jobId: string, fileIndex = 0) =>
+  runBalloon: (jobId: string, fileIndex = 0, numberingMode: "continuous" | "per_page" = "continuous") =>
     req<{ count: number; balloons: Balloon[]; pass_log: unknown[]; page_count?: number }>(
-      `/api/jobs/${jobId}/balloon?file_index=${fileIndex}&passes=1&use_tiles=true`,
+      `/api/jobs/${jobId}/balloon?file_index=${fileIndex}&passes=1&use_tiles=true&numbering_mode=${numberingMode}`,
       { method: "POST" }),
   auditCrosscheck: (jobId: string, fileIndex = 0) =>
     req<{
@@ -361,7 +361,15 @@ export const api = {
         body: JSON.stringify({ balloons })}),
   createBalloon: async (
     jobId: string,
-    data: { page: number; text: string; x: number; y: number; width?: number; height?: number }) =>
+    data: {
+      page: number;
+      text: string;
+      x: number;
+      y: number;
+      width?: number;
+      height?: number;
+      balloon?: number;
+    }) =>
     req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(`/api/jobs/${jobId}/balloons/create`, {
       method: "POST",
       body: (() => {
@@ -372,11 +380,45 @@ export const api = {
         fd.append("y", String(data.y));
         fd.append("width", String(data.width ?? 24));
         fd.append("height", String(data.height ?? 14));
+        if (data.balloon != null && data.balloon > 0) {
+          fd.append("balloon_no", String(data.balloon));
+        }
         return fd;
       })()}),
+  resequenceBalloons: (jobId: string) =>
+    req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(
+      `/api/jobs/${jobId}/balloons/resequence`,
+      { method: "POST" },
+    ),
   deleteBalloon: (jobId: string, no: number) =>
     req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(`/api/jobs/${jobId}/balloons/${no}`, {
       method: "DELETE"}),
+  deleteBalloonsMany: (jobId: string, nos: number[]) =>
+    req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(
+      `/api/jobs/${jobId}/balloons/delete-many`,
+      { method: "POST", body: JSON.stringify({ balloon_numbers: nos }) },
+    ),
+  deletePageBalloons: (jobId: string, page: number) =>
+    req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(
+      `/api/jobs/${jobId}/balloons/delete-page?page=${page}`,
+      { method: "POST" },
+    ),
+  balloonArea: (
+    jobId: string,
+    body: {
+      page: number;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      clear_page?: boolean;
+      replace_in_area?: boolean;
+    },
+  ) =>
+    req<{ count: number; added: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(
+      `/api/jobs/${jobId}/balloon/area`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   saveReport: (
     jobId: string,
     payload: ReportPayload,
@@ -461,8 +503,14 @@ export const api = {
     withAuthQuery(`/api/jobs/${jobId}/download/ballooned`),
   downloadSourceUrl: (jobId: string) =>
     withAuthQuery(`/api/jobs/${jobId}/download/source`),
-  downloadReportPdf: (jobId: string) => withAuthQuery(`/api/jobs/${jobId}/report/pdf`),
-  downloadExcel: (jobId: string) => withAuthQuery(`/api/jobs/${jobId}/report/excel`),
+  downloadReportPdf: (jobId: string, filter?: ReportDownloadFilter) =>
+    withAuthQuery(`/api/jobs/${jobId}/report/pdf${reportDownloadQuery(filter)}`),
+  downloadExcel: (jobId: string, filter?: ReportDownloadFilter) =>
+    withAuthQuery(`/api/jobs/${jobId}/report/excel${reportDownloadQuery(filter)}`),
+  downloadCsv: (jobId: string, filter?: ReportDownloadFilter) =>
+    withAuthQuery(`/api/jobs/${jobId}/report/csv${reportDownloadQuery(filter)}`),
+  downloadJson: (jobId: string, filter?: ReportDownloadFilter) =>
+    withAuthQuery(`/api/jobs/${jobId}/report/json${reportDownloadQuery(filter)}`),
   /**
    * Fast download: save headers only (rows already on server), then GET PDF.
    * Pass rowsDirty=true to upload row edits in chunks first.
@@ -471,7 +519,12 @@ export const api = {
     jobId: string,
     payload: ReportPayload,
     suggestedName?: string,
-    opts?: { rowsDirty?: boolean; skipSave?: boolean; onProgress?: (msg: string) => void },
+    opts?: {
+      rowsDirty?: boolean;
+      skipSave?: boolean;
+      onProgress?: (msg: string) => void;
+      filter?: ReportDownloadFilter;
+    },
   ) => {
     const filename = suggestedName || `${jobId}_inspection_report.pdf`;
     const onProgress = opts?.onProgress;
@@ -488,7 +541,7 @@ export const api = {
       `Building PDF (${payload.rows?.length || 0} rows)… window stays responsive — please wait`,
     );
     await new Promise((r) => setTimeout(r, 40));
-    return api.downloadFile(api.downloadReportPdf(jobId), filename);
+    return api.downloadFile(api.downloadReportPdf(jobId, opts?.filter), filename);
   },
   authFetch: fetchBlob,
   /** Download API file to disk (Save dialog on desktop when available). */
@@ -610,6 +663,7 @@ export type MissingDim = {
 export type ReportRow = {
   sno: number;
   balloon: number;
+  page?: number;
   reference: string;
   nominal: string;
   tol_low: string;
@@ -639,6 +693,34 @@ export type PageGeometry = {
   /** display → unrotated */
   derot: number[];
 };
+
+export type ReportDownloadFilter = {
+  page?: number;
+  area?: { page: number; x: number; y: number; width: number; height: number };
+};
+
+function reportDownloadQuery(filter?: ReportDownloadFilter): string {
+  if (!filter) return "";
+  const q = new URLSearchParams();
+  if (filter.page) q.set("page", String(filter.page));
+  if (filter.area) {
+    q.set("area_page", String(filter.area.page));
+    q.set("area_x", String(filter.area.x));
+    q.set("area_y", String(filter.area.y));
+    q.set("area_w", String(filter.area.width));
+    q.set("area_h", String(filter.area.height));
+  }
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
+export function reportFilterSuffix(filter?: ReportDownloadFilter): string {
+  if (!filter) return "";
+  const parts: string[] = [];
+  if (filter.page) parts.push(`_p${filter.page}`);
+  if (filter.area) parts.push("_area");
+  return parts.join("");
+}
 
 export type ReportPayload = {
   part_number: string;
@@ -677,6 +759,7 @@ export type Job = {
   customer_name?: string;
   authorized_signatory?: string;
   page_geometry?: PageGeometry;
+  balloon_numbering?: "continuous" | "per_page";
   status: string;
   page_count?: number;
 };

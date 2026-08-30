@@ -20,6 +20,9 @@ $env:INCLUDE = "$msvcRoot\include;$sdkRoot\Include\$sdk\ucrt;$sdkRoot\Include\$s
 $env:CARGO_TARGET_DIR = Join-Path $Root "src-tauri\target"
 
 Set-Location $Root
+
+# Desktop EXE must talk to the local backend (not the Cloud Run web URL).
+$env:VITE_API_URL = "http://127.0.0.1:9686"
 npx tauri build --no-bundle
 
 $exe = Join-Path $env:CARGO_TARGET_DIR "release\autoballoon.exe"

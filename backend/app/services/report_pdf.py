@@ -357,6 +357,7 @@ def characteristics_to_report_rows(chars: list[dict], zone_map: dict[int, str] |
         rows.append({
             "sno": i,
             "balloon": bno,
+            "page": int(c.get("page") or 1),
             "reference": ref,
             "nominal": "" if not text or re.match(r"(?i)^auto\s*balloo?n$", text.strip()) else nominal,
             "tol_low": tol_low,
@@ -375,3 +376,180 @@ def default_measure_columns() -> list[dict]:
         {"id": "m1", "label": "M1", "values": {}},
         {"id": "m2", "label": "M2", "values": {}},
     ]
+
+
+def filter_report_rows_by_page(rows: list[dict], page: int | None) -> list[dict]:
+    if not page or page < 1:
+        return list(rows)
+    filtered = [r for r in rows if int(r.get("page") or 0) == int(page)]
+    out = []
+    for i, row in enumerate(filtered, start=1):
+        nr = dict(row)
+        nr["sno"] = i
+        out.append(nr)
+    return out
+
+
+def _balloon_in_area_rect(
+    b: dict,
+    *,
+    page: int,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> bool:
+    if int(b.get("page") or 1) != int(page):
+        return False
+    cx = float(b.get("x") or 0) + float(b.get("width") or 0) / 2.0
+    cy = float(b.get("y") or 0) + float(b.get("height") or 0) / 2.0
+    return x <= cx <= x + width and y <= cy <= y + height
+
+
+def filter_report_rows_by_area(
+    rows: list[dict],
+    balloons: list[dict],
+    *,
+    page: int,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> list[dict]:
+    """Keep report rows whose balloon callout centre lies inside the PDF rectangle."""
+    nos = {
+        int(b.get("balloon") or 0)
+        for b in balloons
+        if _balloon_in_area_rect(b, page=page, x=x, y=y, width=width, height=height)
+    }
+    filtered = [r for r in rows if int(r.get("balloon") or 0) in nos]
+    out = []
+    for i, row in enumerate(filtered, start=1):
+        nr = dict(row)
+        nr["sno"] = i
+        out.append(nr)
+    return out
+
+
+def filter_report_rows(
+    rows: list[dict],
+    balloons: list[dict] | None = None,
+    *,
+    page: int | None = None,
+    area_page: int | None = None,
+    area_x: float | None = None,
+    area_y: float | None = None,
+    area_w: float | None = None,
+    area_h: float | None = None,
+) -> list[dict]:
+    """Apply page and/or work-area filters (renumber S.No after each step)."""
+    out = list(rows)
+    if page and page >= 1:
+        out = filter_report_rows_by_page(out, page)
+    if (
+        area_page
+        and area_page >= 1
+        and area_x is not None
+        and area_y is not None
+        and area_w is not None
+        and area_h is not None
+        and area_w > 0
+        and area_h > 0
+        and balloons
+    ):
+        out = filter_report_rows_by_area(
+            out,
+            balloons,
+            page=int(area_page),
+            x=float(area_x),
+            y=float(area_y),
+            width=float(area_w),
+            height=float(area_h),
+        )
+    return out
+
+
+def report_rows_to_csv(rows: list[dict], measure_columns: list[dict] | None = None) -> bytes:
+    import csv
+    import io
+
+    measure_columns = measure_columns or []
+    headers = [
+        "S.No", "Page", "Balloon", "Reference", "Nominal", "Tol low", "Tol high",
+        "Instrument", "Unit", "Instr. ID", "Measured 1", "Measured 2", "Remarks",
+    ]
+    for col in measure_columns:
+        headers.insert(-1, col.get("label") or "Measured")
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(headers)
+    for row in rows:
+        measured = list(row.get("measured") or ["", ""])
+        while len(measured) < 2:
+            measured.append("")
+        extra = []
+        bkey = str(row.get("balloon"))
+        for col in measure_columns:
+            extra.append((col.get("values") or {}).get(bkey, ""))
+        writer.writerow([
+            row.get("sno"), row.get("page", 1), row.get("balloon"), row.get("reference"),
+            row.get("nominal"), row.get("tol_low"), row.get("tol_high"),
+            row.get("instrument"), row.get("unit"), row.get("instr_id"),
+            measured[0], measured[1] if len(measured) > 1 else "", *extra, row.get("remarks"),
+        ])
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def report_payload_to_json(
+    meta: dict,
+    *,
+    page: int | None = None,
+    area_page: int | None = None,
+    area_x: float | None = None,
+    area_y: float | None = None,
+    area_w: float | None = None,
+    area_h: float | None = None,
+) -> bytes:
+    import json
+
+    rows = filter_report_rows(
+        meta.get("report_rows") or [],
+        meta.get("balloons") or [],
+        page=page,
+        area_page=area_page,
+        area_x=area_x,
+        area_y=area_y,
+        area_w=area_w,
+        area_h=area_h,
+    )
+    payload = {
+        "part_number": meta.get("part_number", ""),
+        "part_name": meta.get("part_name", ""),
+        "revision": meta.get("revision", ""),
+        "material": meta.get("material", ""),
+        "mass": meta.get("mass", ""),
+        "finish": meta.get("finish", ""),
+        "serial_number": meta.get("serial_number", ""),
+        "report_date": meta.get("report_date", ""),
+        "company_name": meta.get("company_name", ""),
+        "supplier_name": meta.get("supplier_name", ""),
+        "customer_name": meta.get("customer_name", ""),
+        "authorized_signatory": meta.get("authorized_signatory", ""),
+        "balloon_numbering": meta.get("balloon_numbering", "continuous"),
+        "page_filter": page,
+        "area_filter": (
+            {
+                "page": area_page,
+                "x": area_x,
+                "y": area_y,
+                "width": area_w,
+                "height": area_h,
+            }
+            if area_page and area_w and area_h
+            else None
+        ),
+        "rows": rows,
+        "measure_columns": meta.get("measure_columns") or default_measure_columns(),
+        "balloons": meta.get("balloons") or [],
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")

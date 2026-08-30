@@ -24,6 +24,20 @@ class BalloonUpdate(BaseModel):
     balloons: list[Balloon]
 
 
+class BalloonDeleteMany(BaseModel):
+    balloon_numbers: list[int] = Field(min_length=1)
+
+
+class AreaBalloonRequest(BaseModel):
+    page: int = Field(ge=1)
+    x: float
+    y: float
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+    clear_page: bool = False
+    replace_in_area: bool = True
+
+
 class MeasureCol(BaseModel):
     id: str
     label: str
@@ -42,6 +56,7 @@ class ReportRow(BaseModel):
     instr_id: str = ""
     measured: list[str] = Field(default_factory=lambda: ["", "", ""])
     remarks: str = ""
+    page: int = 1
 
 
 class ReportPayload(BaseModel):

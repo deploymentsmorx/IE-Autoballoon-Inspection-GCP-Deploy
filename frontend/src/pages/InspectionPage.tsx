@@ -3,10 +3,12 @@ import { Link, Navigate } from "react-router-dom";
 import {
   api,
   measureStatus,
+  reportFilterSuffix,
   type Balloon,
   type Job,
   type MeasureCol,
   type MissingDim,
+  type ReportDownloadFilter,
   type ReportRow,
 } from "../api";
 import { getJobSession, setJobSession, useAuth } from "../auth";
@@ -22,6 +24,14 @@ import {
   unitOptionsForInstrument,
 } from "../constants/instruments";
 import { APP_TITLE } from "../constants/branding";
+
+type WorkAreaState = {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+} | null;
 
 export default function InspectionPage() {
   const { user, logout, clearJob } = useAuth();
@@ -47,8 +57,8 @@ export default function InspectionPage() {
   const undoStackRef = useRef<Balloon[][]>([]);
   const moveUndoPushedRef = useRef(false);
   const balloonsDirtyRef = useRef(false);
-  const syncQueueRef = useRef(Promise.resolve());
   const createQueueRef = useRef(Promise.resolve());
+  const deleteQueueRef = useRef(Promise.resolve());
   const pageGeomCacheRef = useRef<Map<number, import("../api").PageGeometry>>(new Map());
   const undoHandlerRef = useRef<() => void>(() => {});
   const modeRef = useRef(mode);
@@ -57,6 +67,20 @@ export default function InspectionPage() {
   deleteSelectedRef.current = deleteSelected;
   const doDeleteManyRef = useRef<(nos: number[]) => void>(() => {});
   const [unsavedEdits, setUnsavedEdits] = useState(false);
+  const [createBalloonNo, setCreateBalloonNo] = useState("");
+  const [editBalloonNo, setEditBalloonNo] = useState("");
+  const [numberingMode, setNumberingMode] = useState<"continuous" | "per_page">("continuous");
+  const [areaClearPage, setAreaClearPage] = useState(false);
+  const [areaAutoDetect, setAreaAutoDetect] = useState(false);
+  const [workArea, setWorkArea] = useState<{
+    page: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  /** Kept after Save so cropped-area report download still works once the green box is hidden. */
+  const [savedAreaFilter, setSavedAreaFilter] = useState<WorkAreaState>(null);
 
   const pushUndo = () => {
     const snap = balloonsRef.current.map((b) => ({ ...b }));
@@ -81,34 +105,121 @@ export default function InspectionPage() {
       .sort((a, b) => a.balloon - b.balloon)
       .map((b, i) => ({ ...b, balloon: i + 1 }));
 
-  const queueBalloonSync = () => {
-    if (!jobId) return;
-    syncQueueRef.current = syncQueueRef.current.then(async () => {
-      try {
-        const res = await api.saveBalloons(jobId, balloonsRef.current, { redrawPdf: false });
-        if (res?.balloons?.length != null) {
-          balloonsRef.current = res.balloons;
-          setJob((j) =>
-            j
-              ? {
-                  ...j,
-                  balloons: res.balloons,
-                  report_rows: res.report_rows?.length ? res.report_rows : j.report_rows,
-                }
-              : j,
-          );
-        } else if (res?.report_rows?.length) {
-          setJob((j) => (j ? { ...j, report_rows: res.report_rows } : j));
-        }
-        clearBalloonsDirty();
-        if (showReport && !res?.report_rows?.length) {
-          const j = await api.getJob(jobId, viewPage);
-          setJob((prev) => (prev ? { ...prev, report_rows: j.report_rows } : prev));
-        }
-      } catch (ex: any) {
-        setErr(ex.message || "Failed to sync balloon changes");
-      }
+  const syncReportRowsLocally = (
+    balloons: Balloon[],
+    rows: ReportRow[],
+    prevBalloons: Balloon[],
+  ): ReportRow[] => {
+    const fp = (b: Balloon) =>
+      `${b.page || 1}:${Math.round(b.x)}:${Math.round(b.y)}:${Math.round(b.width || 0)}:${b.text || ""}`;
+    const rowByFp = new Map<string, ReportRow>();
+    for (const b of prevBalloons) {
+      const row = rows.find(
+        (r) => (r.page || 1) === (b.page || 1) && r.balloon === b.balloon,
+      );
+      if (row) rowByFp.set(fp(b), { ...row });
+    }
+    return [...balloons]
+      .sort(
+        (a, b) =>
+          (a.page || 1) - (b.page || 1) || a.balloon - b.balloon,
+      )
+      .map((b, i) => {
+        const prev = rowByFp.get(fp(b));
+        const base = prev || {
+          sno: i + 1,
+          balloon: b.balloon,
+          page: b.page || 1,
+          reference: "",
+          nominal: b.text || "",
+          tol_low: "",
+          tol_high: "",
+          instrument: "",
+          unit: "mm",
+          instr_id: "",
+          measured: ["", ""],
+          remarks: "",
+        };
+        return { ...base, sno: i + 1, balloon: b.balloon, page: b.page || 1 };
+      });
+  };
+
+  const applyBalloonNumber = (oldNo: number, raw: string) => {
+    const newNo = parseInt(raw.trim(), 10);
+    if (!Number.isFinite(newNo) || newNo < 1) {
+      setErr("Balloon number must be a positive whole number.");
+      return;
+    }
+    if (newNo === oldNo) return;
+    const page = viewPage + 1;
+    const isPerPage = (job?.balloon_numbering || numberingMode) === "per_page";
+    const inScope = isPerPage ? (b: Balloon) => (b.page || 1) === page : () => true;
+    pushUndo();
+    markBalloonsDirty();
+    const before = balloonsRef.current.map((b) => ({ ...b }));
+    const target = before.find((b) => b.balloon === oldNo && inScope(b));
+    if (!target) {
+      setErr(`Balloon #${oldNo} not found on this page.`);
+      return;
+    }
+    const taken = before.find((b) => b.balloon === newNo && inScope(b));
+    if (!taken && !isPerPage && before.some((b) => b.balloon === newNo)) {
+      setErr(
+        `Balloon #${newNo} already exists on another page. In continuous mode, swap with that balloon or pick a free number.`,
+      );
+      return;
+    }
+    const nextBalloons = before.map((b) => {
+      if (!inScope(b)) return b;
+      if (b.balloon === oldNo) return { ...b, balloon: newNo };
+      if (taken && b.balloon === newNo) return { ...b, balloon: oldNo };
+      return b;
     });
+    balloonsRef.current = nextBalloons;
+    setJob((j) => {
+      if (!j) return j;
+      const report_rows = syncReportRowsLocally(nextBalloons, j.report_rows || [], before);
+      return { ...j, balloons: nextBalloons, report_rows };
+    });
+    if (selected === oldNo) setSelected(newNo);
+    setEditBalloonNo(String(newNo));
+    setAuditMsg(
+      taken
+        ? `Swapped balloon #${oldNo} ↔ #${newNo}. Click Save * to apply.`
+        : `Balloon #${oldNo} → #${newNo}. Click Save * to apply.`,
+    );
+    setErr("");
+  };
+
+  const resetSequence = async () => {
+    if (!jobId || !balloonsRef.current.length) return;
+    if (!window.confirm("Renumber all balloons 1, 2, 3… in order? Inspection report rows will match.")) return;
+    setBusy(true);
+    setErr("");
+    pushUndo();
+    try {
+      const res = await api.resequenceBalloons(jobId);
+      if (res?.balloons?.length != null) {
+        balloonsRef.current = res.balloons;
+        setJob((j) =>
+          j
+            ? {
+                ...j,
+                balloons: res.balloons,
+                report_rows: res.report_rows?.length ? res.report_rows : j.report_rows,
+              }
+            : j,
+        );
+        setSelected(null);
+        setEditBalloonNo("");
+        clearBalloonsDirty();
+        setAuditMsg(`Sequence reset — ${res.count} balloons numbered 1…${res.count}.`);
+      }
+    } catch (e: any) {
+      setErr(e.message || "Could not reset sequence");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const toggleDeleteSelect = (no: number) => {
@@ -215,12 +326,18 @@ export default function InspectionPage() {
     setShowInput(true);
     undoStackRef.current = [];
     setUndoCount(0);
+    setWorkArea(null);
+    setSavedAreaFilter(null);
     clearBalloonsDirty();
   };
 
   useEffect(() => {
     if (jobId) refresh(jobId).catch((e) => setErr(e.message));
   }, [jobId]);
+
+  useEffect(() => {
+    if (job?.balloon_numbering) setNumberingMode(job.balloon_numbering);
+  }, [job?.balloon_numbering, job?.id]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -258,6 +375,18 @@ export default function InspectionPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  const editTargetRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (selected != null) {
+      editTargetRef.current = selected;
+      setEditBalloonNo(String(selected));
+    } else {
+      editTargetRef.current = null;
+      setEditBalloonNo("");
+    }
+  }, [selected]);
+
   if (!user) return <Navigate to="/login" replace />;
 
   const balloons = job?.balloons || [];
@@ -273,6 +402,7 @@ export default function InspectionPage() {
     setViewPage(p);
     setSelected(null);
     setDeleteSelected([]);
+    setWorkArea(null);
     const cached = pageGeomCacheRef.current.get(p);
     if (cached) {
       setJob((j) => (j ? { ...j, page_geometry: cached } : j));
@@ -318,8 +448,8 @@ export default function InspectionPage() {
       setAuditMsg(
         res.message ||
           (n > 1
-            ? `Combined ${n} files (${pages} pages). Click “Run auto ballooning”.`
-            : "Upload done. Click “Run auto ballooning” to process the drawing."),
+            ? `Combined ${n} files (${pages} pages). Choose Numbering, then click “Run auto ballooning”.`
+            : "Upload done. Choose Numbering (if multi-page), then click “Run auto ballooning”."),
       );
     } catch (e: any) {
       setErr(e.message);
@@ -331,13 +461,21 @@ export default function InspectionPage() {
 
   const onBalloon = async () => {
     if (!jobId) return;
+    const modeLabel =
+      numberingMode === "per_page" ? "Per page (1…N each page)" : "Continuous (1…N all pages)";
+    if ((job?.balloons?.length || 0) > 0) {
+      const ok = window.confirm(
+        `Re-run auto ballooning with "${modeLabel}"?\n\nThis replaces all balloons and re-numbers them. Choose a different mode in Numbering first if you want to change.`,
+      );
+      if (!ok) return;
+    }
     setBusy(true);
     setBallooning(true);
     setErr("");
     setAuditMsg("Auto ballooning running......");
     try {
       await flushUnsavedEdits();
-      const res = await api.runBalloon(jobId, 0);
+      const res = await api.runBalloon(jobId, 0, numberingMode);
       await refresh(jobId, { bumpPreview: true, reportHint: showReport });
       setMode("edit");
       setShowInput(false);
@@ -411,7 +549,55 @@ export default function InspectionPage() {
     }
   };
 
-  const download = async (kind: "ballooned" | "report" | "excel" | "source"): Promise<string> => {
+  const areaForReport = (): WorkAreaState => workArea ?? savedAreaFilter;
+
+  const downloadAreaReport = async (format: "pdf" | "excel" | "csv" | "json" = "pdf") => {
+    const area = areaForReport();
+    if (!area || !jobId) {
+      setErr("Draw a work area, create balloons inside it, then Save.");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    setAuditMsg(`Preparing cropped area report (${format.toUpperCase()})…`);
+    try {
+      await flushUnsavedEdits();
+      const filter: ReportDownloadFilter = {
+        area: {
+          page: area.page,
+          x: area.x,
+          y: area.y,
+          width: area.width,
+          height: area.height,
+        },
+      };
+      const srcName = job?.files?.[0]?.name || "";
+      const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
+      const suffix = reportFilterSuffix(filter);
+      const url =
+        format === "pdf"
+          ? api.downloadReportPdf(jobId, filter)
+          : format === "excel"
+            ? api.downloadExcel(jobId, filter)
+            : format === "csv"
+              ? api.downloadCsv(jobId, filter)
+              : api.downloadJson(jobId, filter);
+      const ext = format === "pdf" ? "pdf" : format === "excel" ? "xlsx" : format;
+      const savedPath = await api.downloadFile(url, `${stem}_inspection_report${suffix}.${ext}`);
+      setAuditMsg(
+        savedPath.includes("\\") || savedPath.includes("/")
+          ? `Cropped area report (${format.toUpperCase()}) saved — page ${area.page} only:\n${savedPath}`
+          : `Cropped area report downloaded (page ${area.page} work area only).`,
+      );
+    } catch (e: any) {
+      setAuditMsg("");
+      setErr(e.message || "Area report download failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const download = async (kind: "ballooned" | "source"): Promise<string> => {
     if (!jobId) {
       const msg = "No job loaded — upload a drawing first.";
       setErr(msg);
@@ -422,39 +608,18 @@ export default function InspectionPage() {
     setAuditMsg("Downloading…");
     try {
       await flushUnsavedEdits();
-      if (kind === "report" && (!job?.report_rows || job.report_rows.length === 0)) {
-        if (job?.balloons?.length) {
-          await api.rebuildReport(jobId);
-          await refresh(jobId);
-        }
-      }
       const url =
         kind === "ballooned"
           ? api.downloadBallooned(jobId)
-          : kind === "source"
-            ? api.downloadSourceUrl(jobId)
-            : kind === "report"
-              ? api.downloadReportPdf(jobId)
-              : api.downloadExcel(jobId);
+          : api.downloadSourceUrl(jobId);
       const srcName = job?.files?.[0]?.name || "";
       const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
       const filename =
         kind === "ballooned"
           ? `${stem}_ballooned.pdf`
-          : kind === "source"
-            ? srcName || `${jobId}_input.pdf`
-            : kind === "report"
-              ? `${stem}_inspection_report.pdf`
-              : `${stem}_inspection_report.xlsx`;
+          : srcName || `${jobId}_input.pdf`;
       const savedPath = await api.downloadFile(url, filename);
-      const label =
-        kind === "ballooned"
-          ? "Ballooned PDF"
-          : kind === "source"
-            ? "Input file"
-            : kind === "report"
-              ? "Inspection report PDF"
-              : "Excel report";
+      const label = kind === "ballooned" ? "Ballooned PDF" : "Input file";
       setAuditMsg(
         savedPath.includes("\\") || savedPath.includes("/")
           ? `${label} saved to: ${savedPath}`
@@ -533,7 +698,27 @@ export default function InspectionPage() {
 
   const onCreateBox = (box: { x: number; y: number; width: number; height: number }) => {
     if (!jobId) return;
+    const pg = viewPage + 1;
+    if (workArea && workArea.page === pg) {
+      const cx = box.x + (box.width || 0) / 2;
+      const cy = box.y + (box.height || 0) / 2;
+      const inArea =
+        cx >= workArea.x &&
+        cx <= workArea.x + workArea.width &&
+        cy >= workArea.y &&
+        cy <= workArea.y + workArea.height;
+      if (!inArea) {
+        setErr("Draw inside the green work area (or clear the area to balloon anywhere on the page).");
+        return;
+      }
+    }
+    const parsedCreateNo = parseInt(createBalloonNo.trim(), 10);
+    const requestedNo =
+      createBalloonNo.trim() && Number.isFinite(parsedCreateNo) && parsedCreateNo > 0
+        ? parsedCreateNo
+        : undefined;
     const nextNo =
+      requestedNo ??
       Math.max(0, ...(balloonsRef.current.map((b) => Number(b.balloon) || 0))) + 1;
     const w = box.width || 24;
     const h = box.height || 14;
@@ -576,6 +761,7 @@ export default function InspectionPage() {
           ...box,
           width: w,
           height: h,
+          balloon: requestedNo,
         });
         if (res?.balloons?.length) {
           balloonsRef.current = res.balloons;
@@ -603,6 +789,106 @@ export default function InspectionPage() {
     });
   };
 
+  const deleteAllOnPage = async () => {
+    if (!jobId || pageBalloons.length === 0) return;
+    const pg = viewPage + 1;
+    if (!window.confirm(`Delete all ${pageBalloons.length} balloon(s) on page ${pg}?`)) return;
+    setBusy(true);
+    setErr("");
+    pushUndo();
+    try {
+      await flushUnsavedEdits();
+      const res = await api.deletePageBalloons(jobId, pg);
+      balloonsRef.current = res.balloons;
+      setJob((j) =>
+        j
+          ? {
+              ...j,
+              balloons: res.balloons,
+              report_rows: res.report_rows?.length ? res.report_rows : j.report_rows,
+            }
+          : j,
+      );
+      clearBalloonsDirty();
+      setSelected(null);
+      setDeleteSelected([]);
+      bumpPreview();
+      setAuditMsg(`All balloons on page ${pg} removed (${res.count} remaining).`);
+    } catch (e: any) {
+      setErr(e.message || "Failed to delete page balloons");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onAreaBox = (box: { x: number; y: number; width: number; height: number }) => {
+    if (!jobId) return;
+    const pg = viewPage + 1;
+    const area = { page: pg, ...box };
+    setWorkArea(area);
+    setSavedAreaFilter(null);
+    setErr("");
+    if (areaAutoDetect) {
+      void runAreaAutoBalloon(area);
+      return;
+    }
+    setMode("create");
+    setAuditMsg(
+      `Work area set on page ${pg} — switch to Create and draw balloons inside the green box, then Save.`,
+    );
+  };
+
+  const runAreaAutoBalloon = async (area = workArea) => {
+    if (!jobId || !area || area.page !== viewPage + 1) return;
+    setBusy(true);
+    setErr("");
+    setAuditMsg(areaClearPage ? "Clearing page and auto-ballooning area…" : "Auto-ballooning selected area…");
+    try {
+      await flushUnsavedEdits();
+      const res = await api.balloonArea(jobId, {
+        page: area.page,
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height,
+        clear_page: areaClearPage,
+        replace_in_area: !areaClearPage,
+      });
+      balloonsRef.current = res.balloons;
+      setJob((j) =>
+        j
+          ? {
+              ...j,
+              balloons: res.balloons,
+              status: "ballooned",
+              report_rows: res.report_rows?.length ? res.report_rows : j.report_rows,
+            }
+          : j,
+      );
+      clearBalloonsDirty();
+      bumpPreview();
+      setMode("create");
+      setAuditMsg(
+        areaClearPage
+          ? `Page ${area.page} cleared; +${res.added} auto balloon(s) in area. Use Create for manual balloons inside the green box, then Save.`
+          : `+${res.added} auto balloon(s) in area (${res.count} total). Use Create inside the green box for manual balloons, then Save.`,
+      );
+    } catch (e: any) {
+      setErr(e.message || "Area auto-ballooning failed");
+      setAuditMsg("Work area kept — use Create to add balloons manually inside the green box.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearWorkArea = () => {
+    setWorkArea(null);
+    if (!savedAreaFilter || savedAreaFilter.page === viewPage + 1) {
+      setSavedAreaFilter(null);
+    }
+    setAuditMsg("Work area cleared.");
+  };
+
   const onMoveBalloon = (no: number, patch: Partial<Balloon>) => {
     markBalloonsDirty();
     setJob((j) => {
@@ -626,17 +912,49 @@ export default function InspectionPage() {
 
   const doDeleteMany = (nos: number[]) => {
     if (!jobId || nos.length === 0) return;
+    const unique = [...new Set(nos.map((n) => Number(n) || 0).filter((n) => n > 0))];
+    if (unique.length === 0) return;
     pushUndo();
-    const remove = new Set(nos);
+    const before = balloonsRef.current.map((b) => ({ ...b }));
+    const remove = new Set(unique);
     const next = renumberBalloonsCompact(balloonsRef.current.filter((b) => !remove.has(b.balloon)));
     balloonsRef.current = next;
     setJob((j) => (j ? { ...j, balloons: next } : j));
     setSelected(null);
     setDeleteSelected([]);
     setAuditMsg(
-      nos.length === 1 ? `Balloon #${nos[0]} deleted.` : `${nos.length} balloons deleted.`,
+      unique.length === 1
+        ? `Balloon #${unique[0]} deleted.`
+        : `${unique.length} balloons deleted.`,
     );
-    queueBalloonSync();
+
+    deleteQueueRef.current = deleteQueueRef.current.then(async () => {
+      try {
+        const res = await api.deleteBalloonsMany(jobId, unique);
+        if (res?.balloons?.length != null) {
+          balloonsRef.current = res.balloons;
+          setJob((j) =>
+            j
+              ? {
+                  ...j,
+                  balloons: res.balloons,
+                  report_rows: res.report_rows?.length ? res.report_rows : j.report_rows,
+                }
+              : j,
+          );
+        }
+        clearBalloonsDirty();
+      } catch (ex: any) {
+        balloonsRef.current = before;
+        setJob((j) => (j ? { ...j, balloons: before } : j));
+        if (undoStackRef.current.length) {
+          undoStackRef.current = undoStackRef.current.slice(0, -1);
+          setUndoCount(undoStackRef.current.length);
+        }
+        setErr(ex.message || "Failed to delete balloon(s)");
+        setAuditMsg("");
+      }
+    });
   };
 
   const doDelete = (balloonNo: number) => doDeleteMany([balloonNo]);
@@ -647,17 +965,28 @@ export default function InspectionPage() {
   const saveEdits = async () => {
     if (!jobId) return;
     setBusy(true);
+    const hadWorkArea = workArea && workArea.page === viewPage + 1 ? { ...workArea } : null;
     try {
-      pushUndo();
       await persistBalloons({
         join: true,
+        bumpPreview: true,
         reportHint: showReport,
         skipIfClean: false,
-        redrawPdf: false,
+        redrawPdf: true,
       });
-      setMode("view");
+      if (hadWorkArea) {
+        setSavedAreaFilter(hadWorkArea);
+        setWorkArea(null);
+        if (mode === "area" || mode === "create") setMode("edit");
+      } else {
+        setMode("view");
+      }
       setSelected(null);
-      setAuditMsg("Balloons saved — inspection report updated.");
+      setAuditMsg(
+        hadWorkArea
+          ? "Balloons saved — green work area cleared. Use “Area report” to download cropped inspection data only."
+          : "Balloons saved — inspection report updated.",
+      );
     } catch (e: any) {
       setErr(e.message);
     } finally {
@@ -742,11 +1071,31 @@ export default function InspectionPage() {
           />
           {uploading && <span className="muted" style={{ display: "block", marginTop: 6 }}>Uploading…</span>}
         </div>
+        <label
+          className="balloon-no-field numbering-mode-field"
+          title="Choose before Run auto ballooning. To change later, pick a mode and run again."
+        >
+          <span className="balloon-no-label">Numbering (before run)</span>
+          <select
+            className="balloon-no-input numbering-mode-select"
+            value={numberingMode}
+            disabled={busy || uploading || ballooning}
+            onChange={(e) => setNumberingMode(e.target.value as "continuous" | "per_page")}
+          >
+            <option value="continuous">Continuous (1…N all pages)</option>
+            <option value="per_page">Per page (1…N each page)</option>
+          </select>
+        </label>
         <button
           className="btn btn-primary"
           style={{ width: "auto" }}
           disabled={busy || uploading || !jobId}
           onClick={onBalloon}
+          title={
+            (job?.balloons?.length || 0) > 0
+              ? `Re-run with ${numberingMode === "per_page" ? "per-page" : "continuous"} numbering`
+              : `Run with ${numberingMode === "per_page" ? "per-page" : "continuous"} numbering`
+          }
         >
           {busy ? (ballooning ? "Ballooning…" : "Please wait…") : "Run auto ballooning"}
         </button>
@@ -761,9 +1110,6 @@ export default function InspectionPage() {
         </button>
         <button className="btn btn-ghost" disabled={busy || uploading} onClick={() => void resetLocalJob()}>
           New drawing
-        </button>
-        <button className="btn btn-ghost" disabled={!jobId || uploading || busy} onClick={() => download("excel")}>
-          Download Excel
         </button>
       </div>
 
@@ -919,6 +1265,109 @@ export default function InspectionPage() {
                 label="Edit"
               />
               <ModeBtn
+                active={mode === "area"}
+                disabled={!hasBalloonOutput || busy}
+                onClick={() => {
+                  setMode("area");
+                  setSelected(null);
+                  setErr("");
+                }}
+                label="Area"
+              />
+              {mode === "area" && (
+                <>
+                  <label className="balloon-no-field" title="Remove all balloons on this page before auto-detecting in the area">
+                    <input
+                      type="checkbox"
+                      checked={areaClearPage}
+                      onChange={(e) => setAreaClearPage(e.target.checked)}
+                    />
+                    <span className="balloon-no-label">Clear page first</span>
+                  </label>
+                  <label className="balloon-no-field" title="When checked, auto-detect dimensions immediately after you draw the area">
+                    <input
+                      type="checkbox"
+                      checked={areaAutoDetect}
+                      onChange={(e) => setAreaAutoDetect(e.target.checked)}
+                    />
+                    <span className="balloon-no-label">Auto-detect in area</span>
+                  </label>
+                </>
+              )}
+              {workArea && workArea.page === viewPage + 1 && (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm"
+                    disabled={busy}
+                    onClick={() => void runAreaAutoBalloon()}
+                    title="Run dimension detection inside the green work area"
+                  >
+                    Auto-balloon area
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    disabled={busy}
+                    onClick={clearWorkArea}
+                  >
+                    Clear area
+                  </button>
+                </>
+              )}
+              {(mode === "create" || mode === "edit") && hasBalloonOutput && (
+                <label className="balloon-no-field">
+                  <span className="balloon-no-label">Balloon #</span>
+                  <input
+                    type="number"
+                    min={1}
+                    className="balloon-no-input"
+                    value={mode === "create" ? createBalloonNo : editBalloonNo}
+                    placeholder={mode === "create" ? "Auto" : ""}
+                    disabled={busy || (mode === "edit" && selected == null)}
+                    onChange={(e) => {
+                      if (mode === "create") setCreateBalloonNo(e.target.value);
+                      else setEditBalloonNo(e.target.value);
+                    }}
+                    onFocus={() => {
+                      if (mode === "edit" && selected != null) editTargetRef.current = selected;
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && mode === "edit") {
+                        const target = editTargetRef.current ?? selected;
+                        if (target != null) applyBalloonNumber(target, editBalloonNo);
+                      }
+                    }}
+                    onBlur={() => {
+                      if (mode !== "edit") return;
+                      const target = editTargetRef.current;
+                      const raw = editBalloonNo.trim();
+                      if (target == null || !raw) return;
+                      const parsed = parseInt(raw, 10);
+                      if (Number.isFinite(parsed) && parsed !== target) {
+                        applyBalloonNumber(target, raw);
+                      }
+                    }}
+                    title={
+                      mode === "create"
+                        ? "Optional number for the next balloon (leave blank for next available)"
+                        : "Edit number for selected balloon (Enter or click away to apply)"
+                    }
+                  />
+                </label>
+              )}
+              {mode === "edit" && hasBalloonOutput && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={busy}
+                  onClick={() => void resetSequence()}
+                  title="Renumber all balloons 1, 2, 3… and sync inspection report"
+                >
+                  Reset sequence
+                </button>
+              )}
+              <ModeBtn
                 active={mode === "delete"}
                 disabled={!hasBalloonOutput || busy}
                 onClick={() => {
@@ -947,6 +1396,17 @@ export default function InspectionPage() {
                     Clear selection
                   </button>
                 </>
+              )}
+              {pageBalloons.length > 0 && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={busy}
+                  onClick={() => void deleteAllOnPage()}
+                  title={`Remove every balloon on page ${viewPage + 1}`}
+                >
+                  Delete all on page
+                </button>
               )}
               {mode === "delete" && pageBalloons.length > 0 && (
                 <button
@@ -981,6 +1441,17 @@ export default function InspectionPage() {
               >
                 {busy ? "Downloading…" : "Download"}
               </button>
+              {areaForReport() && (
+                <button
+                  type="button"
+                  className="btn btn-outline btn-sm"
+                  disabled={busy || !hasBalloonOutput}
+                  onClick={() => void downloadAreaReport("pdf")}
+                  title={`Download inspection report for cropped work area only (page ${areaForReport()!.page})`}
+                >
+                  Area report
+                </button>
+              )}
             </div>
           </div>
 
@@ -990,11 +1461,17 @@ export default function InspectionPage() {
               balloons={pageBalloons}
               mode={mode}
               selected={selected}
-              busy={busy && mode !== "delete" && mode !== "create" && !unsavedEdits}
+              busy={busy && mode !== "delete" && mode !== "create" && mode !== "area" && !unsavedEdits}
               liveDraw
               pageGeometry={job?.page_geometry}
+              workArea={
+                workArea && workArea.page === viewPage + 1
+                  ? { x: workArea.x, y: workArea.y, width: workArea.width, height: workArea.height }
+                  : null
+              }
               onSelect={setSelected}
               onCreate={onCreateBox}
+              onArea={onAreaBox}
               onMove={onMoveBalloon}
               onMoveStart={onMoveStart}
               onMoveEnd={onMoveEnd}
@@ -1016,6 +1493,11 @@ export default function InspectionPage() {
 
           {jobId && pageBalloons.length > 0 && (mode === "edit" || mode === "delete") && (
             <div className="balloon-list">
+              {mode === "edit" && (
+                <div className="balloon-list-hint">
+                  Select a balloon · edit its number above · drag to move · Save updates PDF &amp; report
+                </div>
+              )}
               {mode === "delete" && (
                 <div className="balloon-list-hint">
                   Click balloon to delete · Ctrl+click to multi-select · Del key removes selection
@@ -1071,6 +1553,8 @@ export default function InspectionPage() {
         <ReportPanel
           job={job}
           jobId={jobId}
+          workArea={areaForReport()}
+          defaultPage={viewPage + 1}
           onClose={() => {
             setShowReport(false);
             setErr("");
@@ -1122,15 +1606,63 @@ function nowReportDate() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+type ReportViewScope = "all" | "page" | "area";
+
+function filterReportRowsForScope(
+  rows: ReportRow[],
+  balloons: Balloon[],
+  scope: ReportViewScope,
+  pageNum: number,
+  workArea: WorkAreaState,
+): ReportRow[] {
+  let out = rows;
+  if (scope === "page") {
+    out = rows.filter((r) => (r.page || 1) === pageNum);
+  } else if (scope === "area" && workArea) {
+    const nos = new Set(
+      balloons
+        .filter((b) => {
+          if ((b.page || 1) !== workArea.page) return false;
+          const cx = b.x + (b.width || 0) / 2;
+          const cy = b.y + (b.height || 0) / 2;
+          return (
+            cx >= workArea.x &&
+            cx <= workArea.x + workArea.width &&
+            cy >= workArea.y &&
+            cy <= workArea.y + workArea.height
+          );
+        })
+        .map((b) => b.balloon),
+    );
+    out = rows.filter((r) => nos.has(r.balloon));
+  }
+  return out.map((r, i) => ({ ...r, sno: i + 1 }));
+}
+
+function buildReportDownloadFilter(
+  scope: ReportViewScope,
+  pageNum: number,
+  workArea: WorkAreaState,
+): ReportDownloadFilter | undefined {
+  if (scope === "all") return undefined;
+  if (scope === "page") return { page: pageNum };
+  if (scope === "area" && workArea) return { area: workArea };
+  return undefined;
+}
+
 function ReportPanel({
   job,
   jobId,
+  workArea,
+  defaultPage,
   onSaved,
   onClose,
   onError,
 }: {
   job: Job;
   jobId: string;
+  workArea: WorkAreaState;
+  defaultPage: number;
   onSaved: () => Promise<void>;
   onClose: () => void;
   onError: (msg: string) => void;
@@ -1173,7 +1705,28 @@ function ReportPanel({
   const [page, setPage] = useState(0);
   const [rowsDirty, setRowsDirty] = useState(false);
   const [reportDirty, setReportDirty] = useState(false);
+  const [viewScope, setViewScope] = useState<ReportViewScope>(() => (workArea ? "area" : "all"));
+  const [viewPageNum, setViewPageNum] = useState(defaultPage);
   const pageSize = 40;
+  const drawingPageCount = Math.max(1, Number(job.page_count) || 1);
+
+  const filteredRows = filterReportRowsForScope(
+    rows,
+    job.balloons || [],
+    viewScope,
+    viewPageNum,
+    workArea,
+  );
+
+  const downloadFilter = buildReportDownloadFilter(viewScope, viewPageNum, workArea);
+  const scopeLabel =
+    viewScope === "all"
+      ? "all pages"
+      : viewScope === "page"
+        ? `page ${viewPageNum}`
+        : workArea
+          ? `work area · page ${workArea.page}`
+          : "work area";
 
   const markReportDirty = () => setReportDirty(true);
   const markRowsDirty = () => {
@@ -1221,10 +1774,16 @@ function ReportPanel({
     setCustomerName(job.customer_name || "");
     setAuthorizedSignatory(job.authorized_signatory || "");
     setPage(0);
-  }, [job]);
+    setViewPageNum(defaultPage);
+  }, [job, defaultPage]);
 
-  const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
-  const pageRows = rows.slice(page * pageSize, page * pageSize + pageSize);
+  useEffect(() => {
+    if (workArea && viewScope === "area") return;
+    if (!workArea && viewScope === "area") setViewScope("all");
+  }, [workArea, viewScope]);
+
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const pageRows = filteredRows.slice(page * pageSize, page * pageSize + pageSize);
 
   const addColumn = () => {
     markRowsDirty();
@@ -1358,22 +1917,24 @@ function ReportPanel({
     setBusy(true);
     setMsg(
       rowsDirty
-        ? `Preparing download (${rows.length} rows with edits)…`
-        : `Preparing PDF (${rows.length} rows)…`,
+        ? `Preparing download (${filteredRows.length} rows with edits)…`
+        : `Preparing PDF (${filteredRows.length} rows)…`,
     );
     await new Promise((r) => setTimeout(r, 80));
     try {
       const srcName = job.files?.[0]?.name || "";
       const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
-      const body = payload();
+      const pageSuffix = reportFilterSuffix(downloadFilter);
+      const body = { ...payload(), rows: filteredRows };
       const needSave = reportDirty || rowsDirty;
       const savedPath = await api.downloadReportPdfFile(
         jobId,
         body,
-        `${stem}_inspection_report.pdf`,
+        `${stem}_inspection_report${pageSuffix}.pdf`,
         {
           rowsDirty: needSave && rowsDirty,
           skipSave: !needSave,
+          filter: downloadFilter,
           onProgress: (m) => setMsg(m),
         },
       );
@@ -1396,6 +1957,29 @@ function ReportPanel({
     }
   };
 
+  const downloadExport = async (kind: "excel" | "csv" | "json") => {
+    setBusy(true);
+    setMsg(`Preparing ${kind.toUpperCase()} (${scopeLabel})…`);
+    try {
+      const srcName = job.files?.[0]?.name || "";
+      const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
+      const pageSuffix = reportFilterSuffix(downloadFilter);
+      const url =
+        kind === "excel"
+          ? api.downloadExcel(jobId, downloadFilter)
+          : kind === "csv"
+            ? api.downloadCsv(jobId, downloadFilter)
+            : api.downloadJson(jobId, downloadFilter);
+      const ext = kind === "excel" ? "xlsx" : kind;
+      const savedPath = await api.downloadFile(url, `${stem}_inspection_report${pageSuffix}.${ext}`);
+      setMsg(`${kind.toUpperCase()} (${scopeLabel}) saved to:\n${savedPath}`);
+    } catch (e: any) {
+      onError(e.message || `${kind} download failed`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="report-modal-backdrop" onClick={onClose}>
       <div className="report-modal report-modal-desktop" onClick={(e) => e.stopPropagation()}>
@@ -1403,7 +1987,7 @@ function ReportPanel({
           <div>
             <h2 style={{ margin: 0 }}>Inspection Report</h2>
             <p className="muted" style={{ margin: "4px 0 0" }}>
-              {APP_TITLE} · {rows.length} characteristics
+              {APP_TITLE} · {filteredRows.length} characteristics · {scopeLabel}
             </p>
           </div>
           <div className="row">
@@ -1413,11 +1997,56 @@ function ReportPanel({
             <button className="btn btn-primary btn-sm" style={{ width: "auto" }} disabled={busy} onClick={() => void save()}>
               Save report data
             </button>
-            <button className="btn btn-outline btn-sm" disabled={busy} onClick={() => void downloadPdf()}>
-              {busy ? "Working…" : "Download report PDF"}
-            </button>
             <button className="btn btn-ghost btn-sm" onClick={onClose}>
               Close
+            </button>
+          </div>
+        </div>
+
+        <div className="report-download-bar mb">
+          <div className="row report-download-scope">
+            <label className="balloon-no-field">
+              <span className="balloon-no-label">Report includes</span>
+              <select
+                className="balloon-no-input"
+                value={viewScope === "page" ? `page:${viewPageNum}` : viewScope}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "all") setViewScope("all");
+                  else if (v === "area") setViewScope("area");
+                  else if (v.startsWith("page:")) {
+                    setViewScope("page");
+                    setViewPageNum(Number(v.split(":")[1]) || 1);
+                  }
+                  setPage(0);
+                }}
+              >
+                <option value="all">All pages (combined)</option>
+                {drawingPageCount > 1 &&
+                  Array.from({ length: drawingPageCount }, (_, i) => (
+                    <option key={i + 1} value={`page:${i + 1}`}>
+                      Page {i + 1} only
+                    </option>
+                  ))}
+                {workArea && (
+                  <option value="area">Work area / cropped (page {workArea.page})</option>
+                )}
+              </select>
+            </label>
+          </div>
+          <div className="row report-download-formats">
+            <span className="muted report-download-label">Download format:</span>
+            <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadPdf()}>
+              {busy ? "Working…" : "Report PDF"}
+            </button>
+            <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadExport("excel")}>
+              Excel
+            </button>
+            <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadExport("csv")}>
+              CSV
+            </button>
+            <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadExport("json")}>
+              JSON
             </button>
           </div>
         </div>
@@ -1478,6 +2107,7 @@ function ReportPanel({
             <thead>
               <tr>
                 <th>S.No</th>
+                {drawingPageCount > 1 && <th>Page</th>}
                 <th>Balloon</th>
                 <th>Reference</th>
                 <th>Nominal</th>
@@ -1515,6 +2145,7 @@ function ReportPanel({
               {pageRows.map((r) => (
                 <tr key={r.balloon}>
                   <td>{r.sno}</td>
+                  {drawingPageCount > 1 && <td>{r.page || 1}</td>}
                   <td>{r.balloon}</td>
                   <td>
                     <input

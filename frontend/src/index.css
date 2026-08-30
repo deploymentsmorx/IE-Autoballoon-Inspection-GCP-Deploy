@@ -306,8 +306,40 @@ input, select, button, textarea { font: inherit; }
   width: 100%;
   flex-basis: 100%;
   font-size: 0.72rem;
-  color: var(--muted);
+  color: var(--muted, #888);
   padding: 0 4px 4px;
+}
+.balloon-no-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: 0.25rem;
+}
+.balloon-no-label {
+  font-size: 0.78rem;
+  color: var(--muted, #888);
+  white-space: nowrap;
+}
+.balloon-no-input {
+  width: 4.5rem;
+  padding: 0.2rem 0.35rem;
+  font-size: 0.85rem;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.25);
+  color: inherit;
+}
+.numbering-mode-select {
+  min-width: 240px;
+  width: auto;
+  max-width: 280px;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+}
+.numbering-mode-field {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
 }
 .balloon-list-pick {
   background: transparent;
@@ -522,6 +554,23 @@ input, select, button, textarea { font: inherit; }
   color: #111;
   padding: 5px 6px;
   box-sizing: border-box;
+}
+
+.report-download-bar {
+  padding: 10px 12px;
+  border: 1px solid #3a4555;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.report-download-formats {
+  margin-top: 8px;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.report-download-label {
+  font-size: 0.9rem;
+  margin-right: 4px;
 }
 
 @media (max-width: 980px) {

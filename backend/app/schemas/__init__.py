@@ -6,7 +6,7 @@ from .auth import (
     LoginRequest,
     OrgCreate,
 )
-from .autoballoon import Balloon, BalloonUpdate, MeasureCol, ReportPayload, ReportRow, ReportRowsChunk
+from .autoballoon import Balloon, BalloonDeleteMany, BalloonUpdate, AreaBalloonRequest, MeasureCol, ReportPayload, ReportRow, ReportRowsChunk
 from .customer import (
     ApprovedDeviceCreate,
     ApprovedDeviceOut,

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, Response
 
 from app.api.dependencies import require_perm
 from app.core.config import JOBS, UPLOADS
-from app.schemas import BalloonUpdate, ReportPayload, ReportRowsChunk
+from app.schemas import BalloonDeleteMany, BalloonUpdate, AreaBalloonRequest, ReportPayload, ReportRowsChunk
 from app.services.report_pdf import (
     build_report_pdf,
     characteristics_to_report_rows,
@@ -31,8 +31,14 @@ def _job_dir(job_id: str) -> Path:
 
 def _apply_zone_refs(src: Path, balloons: list[dict]) -> dict[int, str]:
     try:
-        from app.services.border_grid import zone_references_for_balloons
+        from app.services.border_grid import zone_references_for_balloons, _dim_reference_point
 
+        # Backfill tx/ty from dim box when missing (older jobs / pre-draw saves)
+        for b in balloons:
+            if b.get("tx") is None or b.get("ty") is None:
+                rx, ry = _dim_reference_point(b)
+                b["tx"] = rx
+                b["ty"] = ry
         return zone_references_for_balloons(src, balloons)
     except Exception:
         return {}
@@ -41,6 +47,51 @@ def _apply_zone_refs(src: Path, balloons: list[dict]) -> dict[int, str]:
 def _build_report_rows(src: Path | None, balloons: list[dict]) -> list[dict]:
     zone_map = _apply_zone_refs(src, balloons) if src and src.exists() else {}
     return characteristics_to_report_rows(balloons, zone_map)
+
+
+def _report_filter_suffix(
+    page: int | None,
+    area_page: int | None,
+    area_w: float | None,
+    area_h: float | None,
+) -> str:
+    parts: list[str] = []
+    if page:
+        parts.append(f"p{page}")
+    if area_page and area_w and area_h:
+        parts.append("area")
+    return ("_" + "_".join(parts)) if parts else ""
+
+
+def _filtered_report_rows(
+    meta: dict,
+    jd: Path,
+    *,
+    page: int | None = None,
+    area_page: int | None = None,
+    area_x: float | None = None,
+    area_y: float | None = None,
+    area_w: float | None = None,
+    area_h: float | None = None,
+) -> list[dict]:
+    from app.services.report_pdf import filter_report_rows
+
+    rows = list(meta.get("report_rows") or [])
+    if not rows and meta.get("balloons"):
+        idx = int(meta.get("active_file") or 0)
+        files = meta.get("files") or []
+        src = jd / files[idx]["path"] if files else None
+        rows = _build_report_rows(src, meta["balloons"]) if src else characteristics_to_report_rows(meta["balloons"])
+    return filter_report_rows(
+        rows,
+        meta.get("balloons") or [],
+        page=page,
+        area_page=area_page,
+        area_x=area_x,
+        area_y=area_y,
+        area_w=area_w,
+        area_h=area_h,
+    )
 
 
 def _ensure_report_date(meta: dict) -> None:
@@ -136,9 +187,158 @@ def _renumber(balloons: list[dict], *, compact: bool = False) -> list[dict]:
     return out
 
 
+def _normalize_incoming_balloons(
+    balloons: list[dict],
+    mode: str,
+    *,
+    compact: bool = False,
+) -> list[dict]:
+    """
+    Per-page numbering allows duplicate balloon #1 on each page.
+    Continuous numbering uses one global sequence.
+    """
+    if mode != "per_page":
+        return _renumber(balloons, compact=compact)
+    from collections import defaultdict
+
+    by_page: dict[int, list[dict]] = defaultdict(list)
+    for b in balloons:
+        by_page[int(b.get("page") or 1)].append(dict(b))
+    out: list[dict] = []
+    for page in sorted(by_page):
+        out.extend(_renumber(by_page[page], compact=compact))
+    out.sort(key=lambda x: (int(x.get("page") or 1), int(x.get("balloon") or 0)))
+    return out
+
+
+def _assert_unique_balloon_numbers(balloons: list[dict], mode: str) -> None:
+    if mode == "per_page":
+        from collections import defaultdict
+
+        by_page: dict[int, set[int]] = defaultdict(set)
+        for b in balloons:
+            n = int(b.get("balloon") or 0)
+            p = int(b.get("page") or 1)
+            if n in by_page[p]:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate balloon #{n} on page {p}. Edit numbers on that page, then Save again.",
+                )
+            by_page[p].add(n)
+        return
+    seen: set[int] = set()
+    for b in balloons:
+        n = int(b.get("balloon") or 0)
+        if n in seen:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Duplicate balloon #{n} in drawing. Swap numbers or pick a free number, then Save.",
+            )
+        seen.add(n)
+
+
+def _balloon_fingerprint(b: dict) -> tuple:
+    return (
+        int(b.get("page") or 1),
+        round(float(b.get("x") or 0), 1),
+        round(float(b.get("y") or 0), 1),
+        round(float(b.get("width") or 0), 1),
+        round(float(b.get("height") or 0), 1),
+        str(b.get("text") or "")[:80],
+    )
+
+
+def _balloon_numbers_changed(prev_balloons: list[dict], balloons: list[dict]) -> bool:
+    if len(prev_balloons) != len(balloons):
+        return False
+    prev_map = {_balloon_fingerprint(b): int(b.get("balloon") or 0) for b in prev_balloons}
+    for b in balloons:
+        fp = _balloon_fingerprint(b)
+        if fp not in prev_map:
+            return True
+        if prev_map[fp] != int(b.get("balloon") or 0):
+            return True
+    return False
+
+
+def _rows_for_balloon_numbers(
+    balloons: list[dict],
+    prev_balloons: list[dict],
+    old_rows: list[dict],
+    zone_map: dict[int, str] | None = None,
+) -> list[dict]:
+    """Rebuild inspection rows when balloon numbers change or sequence resets."""
+    zone_map = zone_map or {}
+    old_map = {int(r.get("balloon")): dict(r) for r in old_rows}
+    fp_to_row: dict[tuple, dict] = {}
+    for b in prev_balloons:
+        bno = int(b.get("balloon") or 0)
+        if bno in old_map:
+            fp_to_row[_balloon_fingerprint(b)] = dict(old_map[bno])
+
+    ordered = sorted(balloons, key=lambda x: int(x.get("balloon") or 0))
+    new_rows: list[dict] = []
+    for i, b in enumerate(ordered, start=1):
+        bno = int(b.get("balloon") or i)
+        fp = _balloon_fingerprint(b)
+        if fp in fp_to_row:
+            row = dict(fp_to_row[fp])
+        else:
+            row = characteristics_to_report_rows([b], zone_map)[0]
+        row["sno"] = i
+        row["balloon"] = bno
+        row["page"] = int(b.get("page") or 1)
+        text = str(b.get("text") or "")
+        if text:
+            fresh = characteristics_to_report_rows([b], zone_map)[0]
+            row["nominal"] = fresh.get("nominal", row.get("nominal", ""))
+            row["tol_low"] = fresh.get("tol_low", row.get("tol_low", ""))
+            row["tol_high"] = fresh.get("tol_high", row.get("tol_high", ""))
+        zone_ref = zone_map.get(bno)
+        if zone_ref:
+            row["reference"] = zone_ref
+        elif not row.get("reference") or str(row.get("reference", "")).startswith("P"):
+            row["reference"] = f"P{b.get('page', 1)}"
+        new_rows.append(row)
+    return new_rows
+
+
 def _next_balloon_no(balloons: list[dict]) -> int:
     nums = [int(b.get("balloon") or 0) for b in balloons]
     return (max(nums) + 1) if nums else 1
+
+
+def _numbering_mode(meta: dict) -> str:
+    mode = str(meta.get("balloon_numbering") or "continuous").strip().lower()
+    return "per_page" if mode == "per_page" else "continuous"
+
+
+def _renumber_job_balloons(balloons: list[dict], mode: str) -> list[dict]:
+    if mode == "per_page":
+        from collections import defaultdict
+
+        by_page: dict[int, list[dict]] = defaultdict(list)
+        for b in balloons:
+            by_page[int(b.get("page") or 1)].append(dict(b))
+        out: list[dict] = []
+        for page in sorted(by_page):
+            ordered = sorted(
+                by_page[page],
+                key=lambda b: (float(b.get("y") or 0), float(b.get("x") or 0)),
+            )
+            for i, b in enumerate(ordered, start=1):
+                b["balloon"] = i
+                out.append(b)
+        return out
+    return _renumber(balloons, compact=True)
+
+
+def _balloon_in_rect(b: dict, rect) -> bool:
+    import fitz
+
+    cx = float(b.get("x") or 0) + float(b.get("width") or 0) / 2.0
+    cy = float(b.get("y") or 0) + float(b.get("height") or 0) / 2.0
+    return bool(rect.contains(fitz.Point(cx, cy)))
 
 
 def _scrape_dim_text(src: Path, page: int, x: float, y: float, width: float, height: float) -> str:
@@ -632,6 +832,7 @@ def run_balloon(
     passes: int = 1,
     use_zones: bool = True,
     use_tiles: bool = True,
+    numbering_mode: str = Query("continuous", description="continuous | per_page"),
     user: dict = Depends(require_perm("write")),
 ):
     from app.services.autoballoon_engine import balloon_pdf
@@ -643,13 +844,15 @@ def run_balloon(
     t0 = time.perf_counter()
 
     meta = _load_meta(job_id)
+    mode = "per_page" if str(numbering_mode).strip().lower() == "per_page" else "continuous"
+    meta["balloon_numbering"] = mode
     jd = _job_dir(job_id)
     files = meta.get("files") or []
     if file_index < 0 or file_index >= len(files):
         raise HTTPException(status_code=400, detail="Invalid file index")
     src = jd / files[file_index]["path"]
     fname = files[file_index].get("name") or src.name
-    log.info("balloon start job=%s file=%s passes=%s", job_id, fname, passes)
+    log.info("balloon start job=%s file=%s passes=%s mode=%s", job_id, fname, passes, mode)
     # Image / scanned drawings: try OCR so dimension text is detectable
     needs_ocr = files[file_index].get("kind") == "image" or not _pdf_has_text(src)
     if needs_ocr:
@@ -670,6 +873,7 @@ def run_balloon(
         use_learning=True,
         ai_fallback=ai_on,
         use_ocr=needs_ocr,
+        numbering_mode=mode,
     )
     log.info(
         "balloon detect job=%s %.1fs balloons=%d pass_log=%s",
@@ -958,12 +1162,14 @@ def rebuild_report(job_id: str, user: dict = Depends(require_perm("write"))):
     files = meta.get("files") or []
     src = jd / files[idx]["path"] if files else None
     zone_map = _apply_zone_refs(src, balloons) if src and src.exists() else {}
-    old_rows = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
+    meta["balloons"] = balloons  # persist tx/ty backfill from dim box
+    old_rows = {_row_key(r): dict(r) for r in (meta.get("report_rows") or [])}
     new_rows = _report_rows_full(balloons, old_rows, zone_map)
     # Always apply fresh grid refs (do not keep stale P1 / wrong zones)
     for row in new_rows:
         bno = int(row.get("balloon") or 0)
-        zone_ref = zone_map.get(bno)
+        page = int(row.get("page") or 1)
+        zone_ref = zone_map.get((page, bno)) or zone_map.get(bno)
         if zone_ref:
             row["reference"] = zone_ref
     meta["report_rows"] = new_rows
@@ -1090,9 +1296,15 @@ def download_source(job_id: str, user: dict = Depends(require_perm("read"))):
     return FileResponse(p, media_type="application/pdf", filename=files[idx]["name"])
 
 
-def _merge_report_row(prev: dict, row: dict, b: dict, zone_map: dict[int, str]) -> dict:
+def _row_key(b_or_r: dict) -> tuple[int, int]:
+    return (int(b_or_r.get("page") or 1), int(b_or_r.get("balloon") or 0))
+
+
+def _merge_report_row(prev: dict, row: dict, b: dict, zone_map: dict) -> dict:
     bno = int(b.get("balloon") or row.get("balloon") or 0)
+    page = int(b.get("page") or row.get("page") or 1)
     row = dict(row)
+    row["page"] = page
     row["instr_id"] = prev.get("instr_id", "")
     row["instrument"] = prev.get("instrument", "")
     row["unit"] = prev.get("unit") or row.get("unit") or "mm"
@@ -1100,30 +1312,42 @@ def _merge_report_row(prev: dict, row: dict, b: dict, zone_map: dict[int, str]) 
     row["remarks"] = prev.get("remarks", "")
     row["tol_low"] = prev.get("tol_low") or row.get("tol_low", "")
     row["tol_high"] = prev.get("tol_high") or row.get("tol_high", "")
-    zone_ref = zone_map.get(bno)
-    # Prefer freshly computed border-grid location whenever available
+    zone_ref = zone_map.get((page, bno)) or zone_map.get(bno)
     if zone_ref:
         row["reference"] = zone_ref
-    elif prev.get("reference"):
-        row["reference"] = prev.get("reference")
     return row
 
 
 def _report_rows_fast(
     balloons: list[dict],
-    old_rows: dict[int, dict],
-    zone_map: dict[int, str] | None = None,
+    old_rows: dict,
+    zone_map: dict | None = None,
+    prev_balloons: list[dict] | None = None,
 ) -> list[dict]:
-    """Update report rows quickly; refresh Reference from zone_map when provided."""
+    """Update report rows; always refresh Reference from full zone_map when provided."""
     zone_map = zone_map or {}
+    fp_to_row: dict[tuple, dict] = {}
+    if prev_balloons:
+        for b in prev_balloons:
+            rk = _row_key(b)
+            if rk in old_rows:
+                fp_to_row[_balloon_fingerprint(b)] = dict(old_rows[rk])
+    ordered = sorted(
+        balloons,
+        key=lambda x: (int(x.get("page") or 1), int(x.get("balloon") or 0)),
+    )
     new_rows = []
-    for i, b in enumerate(balloons, start=1):
+    for i, b in enumerate(ordered, start=1):
         bno = int(b.get("balloon") or i)
-        prev = old_rows.get(bno) or {}
+        page = int(b.get("page") or 1)
+        rk = (page, bno)
+        fp = _balloon_fingerprint(b)
+        prev = fp_to_row.get(fp) or old_rows.get(rk) or old_rows.get(bno) or {}
         if prev:
             row = dict(prev)
             row["sno"] = i
             row["balloon"] = bno
+            row["page"] = page
         else:
             row = characteristics_to_report_rows([b], zone_map)[0]
             row["sno"] = i
@@ -1133,25 +1357,30 @@ def _report_rows_fast(
             row["nominal"] = fresh.get("nominal", "")
             row["tol_low"] = fresh.get("tol_low", "")
             row["tol_high"] = fresh.get("tol_high", "")
-        zone_ref = zone_map.get(bno)
-        if zone_ref and not str(zone_ref).startswith("P"):
+        zone_ref = zone_map.get(rk) or zone_map.get(bno)
+        if zone_ref:
             row["reference"] = zone_ref
-        elif not row.get("reference") or str(row.get("reference")).startswith("P"):
-            row["reference"] = zone_ref or f"P{b.get('page', 1)}"
+        elif not row.get("reference") or str(row.get("reference", "")).startswith("P"):
+            row["reference"] = f"P{page}"
         new_rows.append(row)
     return new_rows
 
 
 def _report_rows_full(
     balloons: list[dict],
-    old_rows: dict[int, dict],
-    zone_map: dict[int, str],
+    old_rows: dict,
+    zone_map: dict,
 ) -> list[dict]:
-    base_rows = characteristics_to_report_rows(balloons, zone_map)
+    ordered = sorted(
+        balloons,
+        key=lambda x: (int(x.get("page") or 1), int(x.get("balloon") or 0)),
+    )
+    base_rows = characteristics_to_report_rows(ordered, zone_map)
     new_rows = []
     for i, row in enumerate(base_rows, start=1):
-        b = balloons[i - 1]
-        prev = old_rows.get(int(b.get("balloon"))) or old_rows.get(i) or {}
+        b = ordered[i - 1]
+        rk = _row_key(b)
+        prev = old_rows.get(rk) or old_rows.get(int(b.get("balloon"))) or old_rows.get(i) or {}
         row["sno"] = i
         new_rows.append(_merge_report_row(prev, row, b, zone_map))
     return new_rows
@@ -1169,8 +1398,13 @@ def update_balloons(
     idx = int(meta.get("active_file") or 0)
     files = meta.get("files") or []
     src = jd / files[idx]["path"]
-    # Preserve numbers (1,2,3…N+1). Do not reshuffle by page position.
-    balloons = _renumber([b.model_dump() for b in body.balloons], compact=False)
+    # Preserve numbers (1,2,3…N+1). On delete-only saves, compact to 1..N.
+    incoming = [b.model_dump() for b in body.balloons]
+    prev_balloons = meta.get("balloons") or []
+    compact_save = len(incoming) < len(prev_balloons)
+    mode = _numbering_mode(meta)
+    _assert_unique_balloon_numbers(incoming, mode)
+    balloons = _normalize_incoming_balloons(incoming, mode, compact=compact_save)
     if redraw_pdf:
         out_pdf = jd / f"ballooned_{idx}.pdf"
         balloons = _draw_balloons_overlay(src, balloons, out_pdf)
@@ -1179,8 +1413,9 @@ def update_balloons(
     else:
         balloons = _ensure_balloon_leaders(balloons)
         meta["balloon_pdf_stale"] = True
-    old_rows = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
     prev_balloons = meta.get("balloons") or []
+    old_rows = {_row_key(r): dict(r) for r in (meta.get("report_rows") or [])}
+    numbers_changed = _balloon_numbers_changed(prev_balloons, balloons)
     prev_by_no = {int(b.get("balloon") or 0): b for b in prev_balloons}
     prev_nos = set(prev_by_no)
     added = [b for b in balloons if int(b.get("balloon") or 0) not in prev_nos]
@@ -1201,19 +1436,205 @@ def update_balloons(
         if int(b.get("balloon") or 0) in prev_by_no
         and _pos_key(b) != _pos_key(prev_by_no[int(b.get("balloon") or 0)])
     ]
-    # Zone scan is cheap now (border marks cached once per page).
-    need_zones = redraw_pdf or count_changed or bool(added) or bool(moved)
-    zone_targets = balloons if (redraw_pdf or count_changed) else (added + moved)
-    zone_map = _apply_zone_refs(src, zone_targets) if (need_zones and src.exists()) else {}
-    if redraw_pdf or count_changed:
-        new_rows = _report_rows_full(balloons, old_rows, zone_map)
+    zone_map = _apply_zone_refs(src, balloons) if src.exists() else {}
+    if redraw_pdf or count_changed or numbers_changed or compact_save:
+        new_rows = _rows_for_balloon_numbers(
+            balloons,
+            prev_balloons,
+            list(meta.get("report_rows") or []),
+            zone_map,
+        )
     else:
-        new_rows = _report_rows_fast(balloons, old_rows, zone_map)
+        new_rows = _report_rows_fast(balloons, old_rows, zone_map, prev_balloons)
     meta["balloons"] = balloons
     meta["report_rows"] = new_rows
     _ensure_measure_columns(meta)
     _save_meta(job_id, meta, sync_files=redraw_pdf)
     return {"count": len(balloons), "balloons": balloons, "report_rows": new_rows}
+
+
+def _delete_balloons_from_meta(meta: dict, remove_nos: set[int]) -> tuple[list[dict], list[dict]]:
+    """Remove balloons by number, compact 1..N, keep report row data aligned by index."""
+    old_balloons = sorted(meta.get("balloons") or [], key=lambda x: int(x.get("balloon") or 0))
+    old_rows = list(meta.get("report_rows") or [])
+    if not old_balloons:
+        raise HTTPException(status_code=404, detail="Balloon not found")
+    paired: list[tuple[dict, dict | None]] = []
+    for i, b in enumerate(old_balloons):
+        row = old_rows[i] if i < len(old_rows) else None
+        paired.append((b, row))
+    kept = [(b, r) for b, r in paired if int(b.get("balloon") or 0) not in remove_nos]
+    if len(kept) == len(old_balloons):
+        raise HTTPException(status_code=404, detail="Balloon not found")
+    kept_balloons = [dict(b) for b, _ in kept]
+    kept_rows = [dict(r) for _, r in kept if r is not None]
+    balloons = _renumber(kept_balloons, compact=True)
+    if len(kept_rows) == len(balloons):
+        new_rows: list[dict] = []
+        for i, (b, row) in enumerate(zip(balloons, kept_rows), start=1):
+            row["sno"] = i
+            row["balloon"] = i
+            new_rows.append(row)
+    else:
+        old_map = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
+        new_rows = _report_rows_fast(balloons, old_map)
+    return balloons, new_rows
+
+
+@router.post("/{job_id}/balloons/delete-many")
+def delete_balloons_many(
+    job_id: str,
+    body: BalloonDeleteMany,
+    user: dict = Depends(require_perm("write")),
+):
+    """Fast delete for one or many balloons without uploading the full balloon list."""
+    meta = _load_meta(job_id)
+    remove = {int(n) for n in body.balloon_numbers if int(n) > 0}
+    if not remove:
+        raise HTTPException(status_code=400, detail="No balloon numbers to delete")
+    balloons, new_rows = _delete_balloons_from_meta(meta, remove)
+    meta["balloons"] = balloons
+    meta["report_rows"] = new_rows
+    meta["balloon_pdf_stale"] = True
+    _ensure_measure_columns(meta)
+    _save_meta(job_id, meta, sync_files=False)
+    return {"count": len(balloons), "balloons": balloons, "report_rows": new_rows}
+
+
+@router.delete("/{job_id}/balloons/{balloon_no}")
+def delete_balloon(
+    job_id: str,
+    balloon_no: int,
+    user: dict = Depends(require_perm("write")),
+):
+    meta = _load_meta(job_id)
+    balloons, new_rows = _delete_balloons_from_meta(meta, {int(balloon_no)})
+    meta["balloons"] = balloons
+    meta["report_rows"] = new_rows
+    meta["balloon_pdf_stale"] = True
+    _ensure_measure_columns(meta)
+    _save_meta(job_id, meta, sync_files=False)
+    return {"count": len(balloons), "balloons": balloons, "report_rows": new_rows}
+
+
+@router.post("/{job_id}/balloons/resequence")
+def resequence_balloons(
+    job_id: str,
+    user: dict = Depends(require_perm("write")),
+):
+    """Renumber all balloons 1..N (by current number order) and sync the inspection report."""
+    meta = _load_meta(job_id)
+    prev = list(meta.get("balloons") or [])
+    if not prev:
+        return {"count": 0, "balloons": [], "report_rows": []}
+    balloons = _renumber_job_balloons(prev, _numbering_mode(meta))
+    new_rows = _rows_for_balloon_numbers(balloons, prev, list(meta.get("report_rows") or []))
+    meta["balloons"] = balloons
+    meta["report_rows"] = new_rows
+    meta["balloon_pdf_stale"] = True
+    _ensure_measure_columns(meta)
+    _save_meta(job_id, meta, sync_files=False)
+    return {"count": len(balloons), "balloons": balloons, "report_rows": new_rows}
+
+
+@router.post("/{job_id}/balloons/delete-page")
+def delete_page_balloons(
+    job_id: str,
+    page: int = Query(..., ge=1),
+    user: dict = Depends(require_perm("write")),
+):
+    """Remove all balloons on one drawing page and renumber the rest."""
+    meta = _load_meta(job_id)
+    prev = list(meta.get("balloons") or [])
+    kept = [b for b in prev if int(b.get("page") or 1) != int(page)]
+    if len(kept) == len(prev):
+        raise HTTPException(status_code=404, detail=f"No balloons on page {page}")
+    balloons = _renumber_job_balloons(kept, _numbering_mode(meta))
+    new_rows = _rows_for_balloon_numbers(balloons, prev, list(meta.get("report_rows") or []))
+    meta["balloons"] = balloons
+    meta["report_rows"] = new_rows
+    meta["balloon_pdf_stale"] = True
+    _ensure_measure_columns(meta)
+    _save_meta(job_id, meta, sync_files=False)
+    return {"count": len(balloons), "balloons": balloons, "report_rows": new_rows, "page": page}
+
+
+@router.post("/{job_id}/balloon/area")
+def balloon_area(
+    job_id: str,
+    body: AreaBalloonRequest,
+    user: dict = Depends(require_perm("write")),
+):
+    """Detect dimensions inside a rectangle (optionally clear page / replace area balloons)."""
+    import fitz
+    from app.services.autoballoon_engine import detect_dimensions, draw_balloons, renumber_characteristics
+
+    meta = _load_meta(job_id)
+    jd = _job_dir(job_id)
+    idx = int(meta.get("active_file") or 0)
+    files = meta.get("files") or []
+    if not files or idx >= len(files):
+        raise HTTPException(status_code=404, detail="No drawing on this job")
+    src = jd / files[idx]["path"]
+    if not src.exists():
+        raise HTTPException(status_code=404, detail="Source drawing missing")
+
+    page = int(body.page)
+    clip = fitz.Rect(body.x, body.y, body.x + body.width, body.y + body.height)
+    prev_balloons = list(meta.get("balloons") or [])
+
+    if body.clear_page:
+        kept = [b for b in prev_balloons if int(b.get("page") or 1) != page]
+    else:
+        kept = list(prev_balloons)
+
+    if body.replace_in_area:
+        kept = [
+            b for b in kept
+            if int(b.get("page") or 1) != page or not _balloon_in_rect(b, clip)
+        ]
+
+    prior = _balloons_to_chars(kept)
+    doc = fitz.open(str(src))
+    try:
+        new_chars = detect_dimensions(
+            doc,
+            level=1,
+            already=prior,
+            use_zones=True,
+            clip=clip,
+            page_indices=[page - 1],
+        )
+        merged = renumber_characteristics(
+            prior + new_chars,
+            mode=_numbering_mode(meta),
+        )
+        out_doc = draw_balloons(doc, merged)
+        try:
+            out_pdf = jd / f"ballooned_{idx}.pdf"
+            out_doc.save(str(out_pdf), deflate=True, garbage=3)
+            _render_preview(out_pdf, jd / "balloon_preview.png", 0)
+        finally:
+            out_doc.close()
+    finally:
+        doc.close()
+
+    balloons = _chars_to_balloons(merged)
+    zone_map = _apply_zone_refs(src, balloons) if src.exists() else {}
+    new_rows = _rows_for_balloon_numbers(balloons, prev_balloons, list(meta.get("report_rows") or []), zone_map)
+    meta["balloons"] = balloons
+    meta["report_rows"] = new_rows
+    meta["status"] = "ballooned"
+    meta["balloon_pdf_stale"] = False
+    _ensure_measure_columns(meta)
+    _save_meta(job_id, meta, sync_files=False)
+    return {
+        "count": len(balloons),
+        "added": len(new_chars),
+        "balloons": balloons,
+        "report_rows": new_rows,
+        "page": page,
+    }
 
 
 @router.post("/{job_id}/balloons/create")
@@ -1225,6 +1646,7 @@ def create_balloon(
     y: float = Form(...),
     width: float = Form(24),
     height: float = Form(14),
+    balloon_no: int | None = Form(None),
     user: dict = Depends(require_perm("write")),
 ):
     meta = _load_meta(job_id)
@@ -1239,7 +1661,13 @@ def create_balloon(
         cleaned = _scrape_dim_text(src, page, x, y, width, height)
 
     balloons = list(meta.get("balloons") or [])
-    next_no = _next_balloon_no(balloons)
+    if balloon_no is not None and int(balloon_no) > 0:
+        want = int(balloon_no)
+        if any(int(b.get("balloon") or 0) == want for b in balloons):
+            raise HTTPException(status_code=400, detail=f"Balloon #{want} already exists")
+        next_no = want
+    else:
+        next_no = _next_balloon_no(balloons)
     bx, by = _default_balloon_leader(x, y, width, height)
     new_balloon = {
         "balloon": next_no,
@@ -1253,8 +1681,11 @@ def create_balloon(
         "pattern": "manual",
         "bx": bx,
         "by": by,
+        "tx": x + width / 2.0,
+        "ty": y + height / 2.0,
     }
-    balloons.append(new_balloon)
+    prev = list(meta.get("balloons") or [])
+    balloons = prev + [new_balloon]
     # learn when we have useful text
     if cleaned:
         try:
@@ -1262,54 +1693,15 @@ def create_balloon(
             add_feedback(text=cleaned, label="dimension", page=page, x=x, y=y, source="manual")
         except Exception:
             pass
-    zone_map = _apply_zone_refs(src, [new_balloon]) if src and src.exists() else {}
-    row = characteristics_to_report_rows([new_balloon], zone_map)[0]
-    row["sno"] = len(balloons)
-    rows = list(meta.get("report_rows") or [])
-    rows.append(row)
-    meta["balloons"] = balloons
+    zone_map = _apply_zone_refs(src, balloons) if src and src.exists() else {}
+    rows = _rows_for_balloon_numbers(balloons, prev, list(meta.get("report_rows") or []), zone_map)
+    meta["balloons"] = sorted(balloons, key=lambda b: int(b.get("balloon") or 0))
     meta["report_rows"] = rows
     meta["status"] = "ballooned"
     meta["balloon_pdf_stale"] = True
     _ensure_measure_columns(meta)
     _save_meta(job_id, meta, sync_files=False)
     return {"count": len(balloons), "balloons": balloons, "report_rows": rows}
-
-
-@router.delete("/{job_id}/balloons/{balloon_no}")
-def delete_balloon(
-    job_id: str,
-    balloon_no: int,
-    user: dict = Depends(require_perm("write")),
-):
-    meta = _load_meta(job_id)
-    old_balloons = sorted(meta.get("balloons") or [], key=lambda x: int(x.get("balloon") or 0))
-    old_rows = list(meta.get("report_rows") or [])
-    remove_idx = next(
-        (i for i, b in enumerate(old_balloons) if int(b.get("balloon") or 0) == int(balloon_no)),
-        None,
-    )
-    if remove_idx is None:
-        raise HTTPException(status_code=404, detail="Balloon not found")
-    old_balloons.pop(remove_idx)
-    if remove_idx < len(old_rows):
-        old_rows.pop(remove_idx)
-    balloons = _renumber(old_balloons, compact=True)
-    if len(old_rows) == len(balloons):
-        for i, (b, row) in enumerate(zip(balloons, old_rows), start=1):
-            b["balloon"] = i
-            row["sno"] = i
-            row["balloon"] = i
-        new_rows = old_rows
-    else:
-        old_map = {int(r.get("balloon")): r for r in (meta.get("report_rows") or [])}
-        new_rows = _report_rows_fast(balloons, old_map)
-    meta["balloons"] = balloons
-    meta["report_rows"] = new_rows
-    meta["balloon_pdf_stale"] = True
-    _ensure_measure_columns(meta)
-    _save_meta(job_id, meta, sync_files=False)
-    return {"count": len(balloons), "balloons": balloons, "report_rows": new_rows}
 
 
 @router.post("/{job_id}/title-extract")
@@ -1367,7 +1759,21 @@ def save_report(
     meta["authorized_signatory"] = body.authorized_signatory
     if not headers_only:
         if body.rows:
-            meta["report_rows"] = [r.model_dump() for r in body.rows]
+            rows = [r.model_dump() for r in body.rows]
+            jd = _job_dir(job_id)
+            idx = int(meta.get("active_file") or 0)
+            files = meta.get("files") or []
+            src = jd / files[idx]["path"] if files else None
+            balloons = list(meta.get("balloons") or [])
+            if src and src.exists() and balloons:
+                zone_map = _apply_zone_refs(src, balloons)
+                meta["balloons"] = balloons
+                for row in rows:
+                    bno = int(row.get("balloon") or 0)
+                    zone_ref = zone_map.get(bno)
+                    if zone_ref:
+                        row["reference"] = zone_ref
+            meta["report_rows"] = rows
         if body.measure_columns:
             meta["measure_columns"] = [c.model_dump() for c in body.measure_columns]
     elif body.measure_columns:
@@ -1437,14 +1843,25 @@ def report_cell_status(
 
 
 @router.get("/{job_id}/report/pdf")
-def download_report_pdf(job_id: str, user: dict = Depends(require_perm("read"))):
+def download_report_pdf(
+    job_id: str,
+    page: int | None = Query(None, ge=1),
+    area_page: int | None = Query(None, ge=1),
+    area_x: float | None = Query(None),
+    area_y: float | None = Query(None),
+    area_w: float | None = Query(None, gt=0),
+    area_h: float | None = Query(None, gt=0),
+    user: dict = Depends(require_perm("read")),
+):
     meta = _load_meta(job_id)
     jd = _job_dir(job_id)
-    out_pdf = jd / "inspection_report.pdf"
+    suffix = _report_filter_suffix(page, area_page, area_w, area_h)
+    out_pdf = jd / f"inspection_report{suffix}.pdf"
     meta_path = jd / "meta.json"
-    # Serve cached PDF when it is newer than meta (avoids 20s+ rebuild on repeat download)
+    has_filter = bool(page or (area_page and area_w and area_h))
     if (
-        out_pdf.exists()
+        not has_filter
+        and out_pdf.exists()
         and meta_path.exists()
         and out_pdf.stat().st_mtime >= meta_path.stat().st_mtime
         and out_pdf.stat().st_size > 1000
@@ -1455,12 +1872,17 @@ def download_report_pdf(job_id: str, user: dict = Depends(require_perm("read")))
             filename=f"{job_id}_inspection_report.pdf",
             headers={"Cache-Control": "no-store"},
         )
-    rows = meta.get("report_rows") or []
-    if not rows and meta.get("balloons"):
-        idx = int(meta.get("active_file") or 0)
-        files = meta.get("files") or []
-        src = jd / files[idx]["path"] if files else None
-        rows = _build_report_rows(src, meta["balloons"]) if src else characteristics_to_report_rows(meta["balloons"])
+    rows = _filtered_report_rows(
+        meta,
+        jd,
+        page=page,
+        area_page=area_page,
+        area_x=area_x,
+        area_y=area_y,
+        area_w=area_w,
+        area_h=area_h,
+    )
+    if not has_filter and rows and not meta.get("report_rows"):
         meta["report_rows"] = rows
         _save_meta_local(job_id, meta)
     _ensure_measure_columns(meta)
@@ -1489,7 +1911,7 @@ def download_report_pdf(job_id: str, user: dict = Depends(require_perm("read")))
     return FileResponse(
         out_pdf,
         media_type="application/pdf",
-        filename=f"{job_id}_inspection_report.pdf",
+        filename=f"{job_id}_inspection_report{suffix}.pdf",
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1534,16 +1956,37 @@ def save_and_download_report_pdf(
 
 
 @router.get("/{job_id}/report/excel")
-def download_excel(job_id: str, user: dict = Depends(require_perm("read"))):
+def download_excel(
+    job_id: str,
+    page: int | None = Query(None, ge=1),
+    area_page: int | None = Query(None, ge=1),
+    area_x: float | None = Query(None),
+    area_y: float | None = Query(None),
+    area_w: float | None = Query(None, gt=0),
+    area_h: float | None = Query(None, gt=0),
+    user: dict = Depends(require_perm("read")),
+):
     from openpyxl import Workbook
     from openpyxl.styles import PatternFill
 
     meta = _load_meta(job_id)
+    jd = _job_dir(job_id)
+    suffix = _report_filter_suffix(page, area_page, area_w, area_h)
+    rows = _filtered_report_rows(
+        meta,
+        jd,
+        page=page,
+        area_page=area_page,
+        area_x=area_x,
+        area_y=area_y,
+        area_w=area_w,
+        area_h=area_h,
+    )
     wb = Workbook()
     ws = wb.active
     ws.title = "Inspection"
     headers = [
-        "S.No", "Balloon", "Reference", "Nominal", "Tol low", "Tol high",
+        "S.No", "Page", "Balloon", "Reference", "Nominal", "Tol low", "Tol high",
         "Instrument", "Unit", "Instr. ID", "Measured 1", "Measured 2", "Measured 3", "Remarks",
     ]
     extra = meta.get("measure_columns") or []
@@ -1555,7 +1998,7 @@ def download_excel(job_id: str, user: dict = Depends(require_perm("read"))):
         "yellow": PatternFill("solid", fgColor="FFEB9C"),
         "red": PatternFill("solid", fgColor="FFC7CE"),
     }
-    for row in meta.get("report_rows") or []:
+    for row in rows:
         measured = list(row.get("measured") or ["", "", ""])
         while len(measured) < 3:
             measured.append("")
@@ -1564,7 +2007,7 @@ def download_excel(job_id: str, user: dict = Depends(require_perm("read"))):
         for col in extra:
             extra_vals.append((col.get("values") or {}).get(bkey, ""))
         values = [
-            row.get("sno"), row.get("balloon"), row.get("reference"), row.get("nominal"),
+            row.get("sno"), row.get("page", 1), row.get("balloon"), row.get("reference"), row.get("nominal"),
             row.get("tol_low"), row.get("tol_high"), row.get("instrument"), row.get("unit"),
             row.get("instr_id"), measured[0], measured[1], measured[2], *extra_vals, row.get("remarks"),
         ]
@@ -1581,10 +2024,79 @@ def download_excel(job_id: str, user: dict = Depends(require_perm("read"))):
             )
             if st in fills:
                 ws.cell(r_idx, measure_start + i).fill = fills[st]
-    out = _job_dir(job_id) / "inspection_report.xlsx"
+    out = _job_dir(job_id) / f"inspection_report{suffix}.xlsx"
     wb.save(out)
     return FileResponse(
         out,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=f"{job_id}_inspection_report.xlsx",
+        filename=f"{job_id}_inspection_report{suffix}.xlsx",
+    )
+
+
+@router.get("/{job_id}/report/csv")
+def download_report_csv(
+    job_id: str,
+    page: int | None = Query(None, ge=1),
+    area_page: int | None = Query(None, ge=1),
+    area_x: float | None = Query(None),
+    area_y: float | None = Query(None),
+    area_w: float | None = Query(None, gt=0),
+    area_h: float | None = Query(None, gt=0),
+    user: dict = Depends(require_perm("read")),
+):
+    from app.services.report_pdf import report_rows_to_csv
+
+    meta = _load_meta(job_id)
+    jd = _job_dir(job_id)
+    suffix = _report_filter_suffix(page, area_page, area_w, area_h)
+    rows = _filtered_report_rows(
+        meta,
+        jd,
+        page=page,
+        area_page=area_page,
+        area_x=area_x,
+        area_y=area_y,
+        area_w=area_w,
+        area_h=area_h,
+    )
+    data = report_rows_to_csv(rows, meta.get("measure_columns") or [])
+    out = _job_dir(job_id) / f"inspection_report{suffix}.csv"
+    out.write_bytes(data)
+    return FileResponse(
+        out,
+        media_type="text/csv; charset=utf-8",
+        filename=f"{job_id}_inspection_report{suffix}.csv",
+    )
+
+
+@router.get("/{job_id}/report/json")
+def download_report_json(
+    job_id: str,
+    page: int | None = Query(None, ge=1),
+    area_page: int | None = Query(None, ge=1),
+    area_x: float | None = Query(None),
+    area_y: float | None = Query(None),
+    area_w: float | None = Query(None, gt=0),
+    area_h: float | None = Query(None, gt=0),
+    user: dict = Depends(require_perm("read")),
+):
+    from app.services.report_pdf import report_payload_to_json
+
+    meta = _load_meta(job_id)
+    suffix = _report_filter_suffix(page, area_page, area_w, area_h)
+    data = report_payload_to_json(
+        meta,
+        page=page,
+        area_page=area_page,
+        area_x=area_x,
+        area_y=area_y,
+        area_w=area_w,
+        area_h=area_h,
+    )
+    out = _job_dir(job_id) / f"inspection_report{suffix}.json"
+    out.write_bytes(data)
+    return FileResponse(
+        out,
+        media_type="application/json",
+        filename=f"{job_id}_inspection_report{suffix}.json",
     )

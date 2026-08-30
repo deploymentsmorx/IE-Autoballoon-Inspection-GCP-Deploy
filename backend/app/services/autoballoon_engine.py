@@ -886,6 +886,32 @@ _DIM_CATEGORIES = frozenset({
     "gdt",
 })
 
+# Strict auto-balloon: dimensions only (no title block, notes, refs, welds, GD&T symbols)
+_STRICT_BALLOON_CATEGORIES = frozenset({
+    "linear",
+    "tolerance",
+    "angle",
+    "radius",
+    "diameter",
+    "thread",
+    "fit",
+    "chamfer",
+    "feature",
+})
+
+
+def _strict_dimension_only() -> bool:
+    import os
+    return os.environ.get("SMORX_STRICT_DIM", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _category_allowed_for_balloon(category: str, pattern: str = "") -> bool:
+    if not _strict_dimension_only():
+        return category in _DIM_CATEGORIES or category in {"", "weld", "reference", "surface", "gdt"}
+    if category in _STRICT_BALLOON_CATEGORIES:
+        return True
+    return False
+
 
 @dataclass
 class PageZones:
@@ -1004,13 +1030,14 @@ def _zone_at(x: float, y: float, zones: PageZones) -> str:
 
 def _zone_allows_pattern(zone: str, pattern: str, category: str) -> bool:
     """Policy: what may be ballooned in each zone."""
+    if _strict_dimension_only():
+        # Strict: main drawing geometry only — never BOM, notes, or title block.
+        return zone == "drawing"
     if zone == "drawing":
         return True
     if zone == "title":
-        # Identity fields + real dims that land in overly wide title bands
-        if pattern in {"drawing_no", "revision", "part_no"}:
-            return True
-        return category in _DIM_CATEGORIES
+        # Title block is OCR-only (inspection report headers) — never balloon.
+        return False
     if zone == "bom":
         return pattern in _BOM_OK_PATTERNS or category in _DIM_CATEGORIES
     if zone == "notes":
@@ -2186,8 +2213,7 @@ def detect_dimensions(
             except Exception:
                 pass
 
-            # Title-block / table filters — drawing zone, full-page only.
-            # Do not drop real dimension callouts that sit in the bottom/right band.
+            # Title-block band — never balloon (report fields come from title_block_extract OCR).
             if zone == "drawing" and clip is None:
                 if _in_title_block(
                     float(rect.x0),
@@ -2195,9 +2221,9 @@ def detect_dimensions(
                     bound,
                     bottom_frac=cfg["title_bottom"],
                     right_frac=cfg["title_right"],
-                ) and category not in _DIM_CATEGORIES:
+                ):
                     continue
-                if _in_title_table_band(float(rect.x0), float(rect.y0), size, bound) and category not in _DIM_CATEGORIES:
+                if _in_title_table_band(float(rect.x0), float(rect.y0), size, bound):
                     continue
 
             # NEVER balloon sheet border zone / frame numbers (A B C… / 1 2 3…)
@@ -2213,144 +2239,121 @@ def detect_dimensions(
                 continue
             if _is_same_dim(page_index + 1, accepted, rect, pattern, prior):
                 continue
+            if not _category_allowed_for_balloon(category or "", pattern or ""):
+                continue
             found.append((page_index, accepted, rect, size, category, pattern))
 
-        # Fillet weld sizes (3, 6, …) next to weld triangles — drawing / notes only
-        for text, rect, size in _weld_size_candidates(page, items):
-            if not (cfg["size_lo"] <= size <= cfg["size_hi"]):
-                continue
-            if not bound.intersects(rect):
-                continue
-            tcx = (rect.x0 + rect.x1) / 2
-            tcy = (rect.y0 + rect.y1) / 2
-            if clip is not None and not (
-                clip.x0 <= tcx <= clip.x1 and clip.y0 <= tcy <= clip.y1
-            ):
-                continue
-            zone = _zone_at(tcx, tcy, zones) if zones else "drawing"
-            if zone in {"bom", "title"}:
-                continue
-            if zone == "drawing" and _in_title_block(
-                float(rect.x0),
-                float(rect.y0),
-                bound,
-                bottom_frac=cfg["title_bottom"],
-                right_frac=cfg["title_right"],
-            ):
-                continue
-            if _is_border_grid_mark(text, float(rect.x0), float(rect.y0), bound):
-                continue
-            # Weld size beside △ / ○ is OK — never treat weld-all-around as item balloon
-            if _is_same_dim(page_index + 1, text, rect, "weld_size", prior):
-                continue
-            found.append((page_index, text, rect, size, "weld", "weld_size"))
-
-        # Surface-finish grades beside roughness V symbols
-        for text, rect, size in _surface_finish_candidates(page, items):
-            if not (cfg["size_lo"] <= size <= cfg["size_hi"]):
-                continue
-            if not bound.intersects(rect):
-                continue
-            tcx = (rect.x0 + rect.x1) / 2
-            tcy = (rect.y0 + rect.y1) / 2
-            if clip is not None and not (
-                clip.x0 <= tcx <= clip.x1 and clip.y0 <= tcy <= clip.y1
-            ):
-                continue
-            zone = _zone_at(tcx, tcy, zones) if zones else "drawing"
-            if zone != "drawing":
-                continue
-            if _in_title_block(
-                float(rect.x0),
-                float(rect.y0),
-                bound,
-                bottom_frac=cfg["title_bottom"],
-                right_frac=cfg["title_right"],
-            ):
-                continue
-            if _is_border_grid_mark(text, float(rect.x0), float(rect.y0), bound):
-                continue
-            if _is_circled_number(text, tcx, tcy, size, drawings, existing_circles):
-                continue
-            if _is_revision_index_text(text) and _is_inside_revision_triangle(
-                tcx, tcy, size, drawings, revision_tris
-            ):
-                continue
-            if _is_same_dim(page_index + 1, text, rect, "surface_finish", prior):
-                continue
-            found.append((page_index, text, rect, size, "surface", "surface_finish"))
-
-        # GD&T feature-control-frame tolerances (0.05, 0.2…)
-        for text, rect, size in _gdt_tolerance_candidates(page, items):
-            if not (cfg["size_lo"] <= size <= cfg["size_hi"]):
-                continue
-            if not bound.intersects(rect):
-                continue
-            tcx = (rect.x0 + rect.x1) / 2
-            tcy = (rect.y0 + rect.y1) / 2
-            if clip is not None and not (
-                clip.x0 <= tcx <= clip.x1 and clip.y0 <= tcy <= clip.y1
-            ):
-                continue
-            zone = _zone_at(tcx, tcy, zones) if zones else "drawing"
-            if zone in {"bom", "title"}:
-                continue
-            if _is_border_grid_mark(text, float(rect.x0), float(rect.y0), bound):
-                continue
-            if _is_same_dim(page_index + 1, text, rect, "gdt_tolerance", prior):
-                continue
-            found.append((page_index, text, rect, size, "gdt", "gdt_tolerance"))
-
-        # Reference dims with vector-drawn parentheses: (2227)
-        for text, rect, size in _drawn_paren_ref_candidates(page, items, drawings):
-            if not (cfg["size_lo"] <= size <= cfg["size_hi"]):
-                continue
-            if not bound.intersects(rect):
-                continue
-            tcx = (rect.x0 + rect.x1) / 2
-            tcy = (rect.y0 + rect.y1) / 2
-            if clip is not None and not (
-                clip.x0 <= tcx <= clip.x1 and clip.y0 <= tcy <= clip.y1
-            ):
-                continue
-            zone = _zone_at(tcx, tcy, zones) if zones else "drawing"
-            if zone in {"bom", "title"}:
-                continue
-            if _is_border_grid_mark(text, float(rect.x0), float(rect.y0), bound):
-                continue
-            if _is_circled_number(text.strip("()"), tcx, tcy, size, drawings, existing_circles):
-                continue
-            if _is_same_dim(page_index + 1, text, rect, "ref_paren", prior):
-                continue
-            found.append((page_index, text, rect, size, "reference", "ref_paren"))
-
-        # Drawing / revision / part numbers (title block — intentionally ballooned)
-        # Skip when tiling a drawing clip (identity is page-level)
-        if clip is None:
-            for text, rect, size, pattern in _identity_field_candidates(items, bound):
+        # Fillet weld sizes — skip in strict dimension-only mode
+        if not _strict_dimension_only():
+            for text, rect, size in _weld_size_candidates(page, items):
+                if not (cfg["size_lo"] <= size <= cfg["size_hi"]):
+                    continue
                 if not bound.intersects(rect):
                     continue
                 tcx = (rect.x0 + rect.x1) / 2
                 tcy = (rect.y0 + rect.y1) / 2
-                if _is_inside_existing_balloon(tcx, tcy, max(size, 6.0), drawings, existing_circles):
+                if clip is not None and not (
+                    clip.x0 <= tcx <= clip.x1 and clip.y0 <= tcy <= clip.y1
+                ):
                     continue
-                if _is_same_dim(page_index + 1, text, rect, pattern, prior):
+                zone = _zone_at(tcx, tcy, zones) if zones else "drawing"
+                if zone in {"bom", "title"}:
                     continue
-                already_queued = False
-                for pi, ft, fr, _, _, fp in found:
-                    if pi != page_index:
-                        continue
-                    if fp == pattern and _norm_dim_text(ft) == _norm_dim_text(text):
-                        already_queued = True
-                        break
-                    pcx = (fr.x0 + fr.x1) / 2
-                    pcy = (fr.y0 + fr.y1) / 2
-                    if math.hypot(pcx - tcx, pcy - tcy) < 14:
-                        already_queued = True
-                        break
-                if already_queued:
+                if zone == "drawing" and _in_title_block(
+                    float(rect.x0),
+                    float(rect.y0),
+                    bound,
+                    bottom_frac=cfg["title_bottom"],
+                    right_frac=cfg["title_right"],
+                ):
                     continue
-                found.append((page_index, text, rect, size, "identity", pattern))
+                if _is_border_grid_mark(text, float(rect.x0), float(rect.y0), bound):
+                    continue
+                if _is_same_dim(page_index + 1, text, rect, "weld_size", prior):
+                    continue
+                found.append((page_index, text, rect, size, "weld", "weld_size"))
+
+        # Surface-finish — skip in strict dimension-only mode
+        if not _strict_dimension_only():
+            for text, rect, size in _surface_finish_candidates(page, items):
+                if not (cfg["size_lo"] <= size <= cfg["size_hi"]):
+                    continue
+                if not bound.intersects(rect):
+                    continue
+                tcx = (rect.x0 + rect.x1) / 2
+                tcy = (rect.y0 + rect.y1) / 2
+                if clip is not None and not (
+                    clip.x0 <= tcx <= clip.x1 and clip.y0 <= tcy <= clip.y1
+                ):
+                    continue
+                zone = _zone_at(tcx, tcy, zones) if zones else "drawing"
+                if zone != "drawing":
+                    continue
+                if _in_title_block(
+                    float(rect.x0),
+                    float(rect.y0),
+                    bound,
+                    bottom_frac=cfg["title_bottom"],
+                    right_frac=cfg["title_right"],
+                ):
+                    continue
+                if _is_border_grid_mark(text, float(rect.x0), float(rect.y0), bound):
+                    continue
+                if _is_circled_number(text, tcx, tcy, size, drawings, existing_circles):
+                    continue
+                if _is_revision_index_text(text) and _is_inside_revision_triangle(
+                    tcx, tcy, size, drawings, revision_tris
+                ):
+                    continue
+                if _is_same_dim(page_index + 1, text, rect, "surface_finish", prior):
+                    continue
+                found.append((page_index, text, rect, size, "surface", "surface_finish"))
+
+        # GD&T — skip in strict dimension-only mode
+        if not _strict_dimension_only():
+            for text, rect, size in _gdt_tolerance_candidates(page, items):
+                if not (cfg["size_lo"] <= size <= cfg["size_hi"]):
+                    continue
+                if not bound.intersects(rect):
+                    continue
+                tcx = (rect.x0 + rect.x1) / 2
+                tcy = (rect.y0 + rect.y1) / 2
+                if clip is not None and not (
+                    clip.x0 <= tcx <= clip.x1 and clip.y0 <= tcy <= clip.y1
+                ):
+                    continue
+                zone = _zone_at(tcx, tcy, zones) if zones else "drawing"
+                if zone in {"bom", "title"}:
+                    continue
+                if _is_border_grid_mark(text, float(rect.x0), float(rect.y0), bound):
+                    continue
+                if _is_same_dim(page_index + 1, text, rect, "gdt_tolerance", prior):
+                    continue
+                found.append((page_index, text, rect, size, "gdt", "gdt_tolerance"))
+
+        # Reference dims with vector-drawn parentheses — skip in strict mode
+        if not _strict_dimension_only():
+            for text, rect, size in _drawn_paren_ref_candidates(page, items, drawings):
+                if not (cfg["size_lo"] <= size <= cfg["size_hi"]):
+                    continue
+                if not bound.intersects(rect):
+                    continue
+                tcx = (rect.x0 + rect.x1) / 2
+                tcy = (rect.y0 + rect.y1) / 2
+                if clip is not None and not (
+                    clip.x0 <= tcx <= clip.x1 and clip.y0 <= tcy <= clip.y1
+                ):
+                    continue
+                zone = _zone_at(tcx, tcy, zones) if zones else "drawing"
+                if zone in {"bom", "title"}:
+                    continue
+                if _is_border_grid_mark(text, float(rect.x0), float(rect.y0), bound):
+                    continue
+                if _is_circled_number(text.strip("()"), tcx, tcy, size, drawings, existing_circles):
+                    continue
+                if _is_same_dim(page_index + 1, text, rect, "ref_paren", prior):
+                    continue
+                found.append((page_index, text, rect, size, "reference", "ref_paren"))
 
     found.sort(key=lambda x: (x[0], round(x[2].y0, 1), round(x[2].x0, 1)))
 
@@ -2438,6 +2441,48 @@ def detect_dimensions_slice_cutter(
 
 
 def _renumber(chars: list[Characteristic]) -> list[Characteristic]:
+    return renumber_characteristics(chars, mode="continuous")
+
+
+def renumber_characteristics(
+    chars: list[Characteristic],
+    *,
+    mode: str = "continuous",
+) -> list[Characteristic]:
+    """Renumber balloons: continuous 1..N globally, or per_page 1..n on each sheet."""
+    if mode == "per_page":
+        from collections import defaultdict
+
+        by_page: dict[int, list[Characteristic]] = defaultdict(list)
+        for c in chars:
+            by_page[int(c.page or 1)].append(c)
+        out: list[Characteristic] = []
+        for page in sorted(by_page):
+            ordered = sorted(
+                by_page[page],
+                key=lambda c: (round(float(c.y), 1), round(float(c.x), 1)),
+            )
+            for i, c in enumerate(ordered, start=1):
+                out.append(
+                    Characteristic(
+                        balloon=i,
+                        page=c.page,
+                        text=c.text,
+                        x=c.x,
+                        y=c.y,
+                        width=c.width,
+                        height=c.height,
+                        category=c.category,
+                        pattern=c.pattern,
+                        family=c.family,
+                        bx=c.bx,
+                        by=c.by,
+                        tx=c.tx,
+                        ty=c.ty,
+                        arrow_size=c.arrow_size,
+                    )
+                )
+        return out
     out: list[Characteristic] = []
     for i, c in enumerate(chars, start=1):
         out.append(
@@ -2454,6 +2499,9 @@ def _renumber(chars: list[Characteristic]) -> list[Characteristic]:
                 family=c.family,
                 bx=c.bx,
                 by=c.by,
+                tx=c.tx,
+                ty=c.ty,
+                arrow_size=c.arrow_size,
             )
         )
     return out
@@ -2939,6 +2987,13 @@ def collect_miss_candidates(
             if _is_same_dim(page_index + 1, t, rect, "candidate", already):
                 continue
             zone = _zone_at(tcx, tcy, zones)
+            if _strict_dimension_only():
+                if zone != "drawing":
+                    continue
+                if _in_title_block(float(rect.x0), float(rect.y0), bound):
+                    continue
+                if _in_title_table_band(float(rect.x0), float(rect.y0), size, bound):
+                    continue
             reason = _exclusion_reason(t) or ""
             matched, pattern, category = _is_dimension_verbose(t)
             if matched and _zone_allows_pattern(zone, pattern or "", category or ""):
@@ -3162,6 +3217,13 @@ def apply_ai_fallback(
         })
         if label != "dimension" or conf < min_confidence:
             continue
+        zone = str(c.get("zone") or "drawing")
+        if _strict_dimension_only():
+            if zone != "drawing":
+                continue
+            _matched, _pat, _cat = _is_dimension_verbose(c["text"])
+            if not _category_allowed_for_balloon(_cat or "", _pat or ""):
+                continue
         rect = fitz.Rect(c["x"], c["y"], c["x"] + c["width"], c["y"] + c["height"])
         if _is_same_dim(c["page"], c["text"], rect, "ai_fallback", working):
             continue
@@ -3209,6 +3271,7 @@ def balloon_pdf(
     ai_api_key: str | None = None,
     ai_model: str | None = None,
     use_ocr: bool | None = None,
+    numbering_mode: str = "continuous",
 ) -> tuple[bytes, list[Characteristic], list[dict]]:
     """
     Balloon a drawing PDF.
@@ -3239,10 +3302,16 @@ def balloon_pdf(
             use_tiles=use_tiles,
             use_ocr=bool(use_ocr),
         )
+        mode = "per_page" if str(numbering_mode).strip().lower() == "per_page" else "continuous"
+        chars = renumber_characteristics(chars, mode=mode)
         if use_learning:
             learned = apply_learned_dimensions(src, chars)
             if learned:
-                chars = _renumber(chars + learned)
+                learned = [
+                    c for c in learned
+                    if _category_allowed_for_balloon(c.category or "", c.pattern or "")
+                ]
+                chars = renumber_characteristics(chars + learned, mode=mode)
                 pass_log.append({
                     "pass": len(pass_log) + 1,
                     "level": 0,
@@ -3259,7 +3328,11 @@ def balloon_pdf(
                 model=ai_model,
             )
             if ai_chars:
-                chars = _renumber(chars + ai_chars)
+                ai_chars = [
+                    c for c in ai_chars
+                    if _category_allowed_for_balloon(c.category or "", c.pattern or "")
+                ]
+                chars = renumber_characteristics(chars + ai_chars, mode=mode)
                 pass_log.append({
                     "pass": len(pass_log) + 1,
                     "level": 0,
@@ -3663,9 +3736,13 @@ def draw_balloons(
         for c, cx, cy, r in placed:
             c.bx = cx
             c.by = cy
-            # Dimension target (leader tip) — custom tx/ty in edit saves, else dim centre
-            tx = float(c.tx) if c.tx is not None else c.x + c.width / 2.0
-            ty = float(c.ty) if c.ty is not None else c.y + c.height / 2.0
+            # Dimension target (leader tip) — centre of dotted-square dim box; persist for grid refs
+            if c.tx is None:
+                c.tx = c.x + c.width / 2.0
+            if c.ty is None:
+                c.ty = c.y + c.height / 2.0
+            tx = float(c.tx)
+            ty = float(c.ty)
             arrow_scale = float(c.arrow_size) if c.arrow_size is not None else 1.0
 
             # Leader starts at balloon rim toward the text

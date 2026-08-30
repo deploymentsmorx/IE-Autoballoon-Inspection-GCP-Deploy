@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import type { Balloon, PageGeometry } from "../api";
 import { useAuthImage } from "../hooks/useAuthImage";
 
-export type Mode = "view" | "create" | "edit" | "delete";
+export type Mode = "view" | "create" | "edit" | "delete" | "area";
 
 /** True when left-drag should pan instead of edit/create/delete. */
 function shouldPan(e: ReactPointerEvent, mode: Mode, spaceDown: boolean) {
@@ -30,6 +30,8 @@ type Props = {
   pageGeometry?: PageGeometry | null;
   onSelect: (no: number | null) => void;
   onCreate: (box: { x: number; y: number; width: number; height: number }) => void;
+  /** Auto-detect dimensions inside drawn rectangle (area mode). */
+  onArea?: (box: { x: number; y: number; width: number; height: number }) => void;
   /** Move balloon circle (bx/by) and keep dim tip (x/y) relative. */
   onMove: (no: number, patch: Partial<Balloon>) => void;
   onMoveStart?: () => void;
@@ -38,6 +40,8 @@ type Props = {
   /** Balloons marked for batch delete (delete mode). */
   deleteSelected?: number[];
   onToggleDeleteSelect?: (no: number) => void;
+  /** Persistent work area (PDF coords) — shown as green overlay. */
+  workArea?: { x: number; y: number; width: number; height: number } | null;
 };
 
 function applyMat(m: number[] | undefined, x: number, y: number) {
@@ -96,12 +100,14 @@ export default function BalloonCanvas({
   pageGeometry,
   onSelect,
   onCreate,
+  onArea,
   onMove,
   onMoveStart,
   onMoveEnd,
   onDelete,
   deleteSelected = [],
   onToggleDeleteSelect,
+  workArea = null,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -156,6 +162,8 @@ export default function BalloonCanvas({
   deleteSelectedRef.current = deleteSelected;
   const geomRef = useRef(pageGeometry);
   geomRef.current = pageGeometry;
+  const workAreaRef = useRef(workArea);
+  workAreaRef.current = workArea;
   const busyRef = useRef(!!busy);
   busyRef.current = !!busy;
   const { src, failed, loading } = useAuthImage(imageUrl);
@@ -501,12 +509,34 @@ export default function BalloonCanvas({
       const w = Math.abs(box.x1 - box.x0) * z;
       const h = Math.abs(box.y1 - box.y0) * z;
       ctx.save();
-      ctx.strokeStyle = "#3d7eff";
-      ctx.fillStyle = "rgba(61,126,255,0.2)";
+      ctx.strokeStyle = "#b71c1c";
+      ctx.fillStyle = "rgba(183, 28, 28, 0.22)";
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
       ctx.fillRect(x, y, w, h);
       ctx.strokeRect(x, y, w, h);
+      ctx.restore();
+    }
+
+    const wa = workAreaRef.current;
+    if (wa && wa.width > 0 && wa.height > 0) {
+      const r = pdfBoxToImg(wa.x, wa.y, wa.width, wa.height);
+      const x = pan.x + r.x * z;
+      const y = pan.y + r.y * z;
+      const w = r.w * z;
+      const h = r.h * z;
+      ctx.save();
+      ctx.strokeStyle = "#2e7d32";
+      ctx.fillStyle = "rgba(46, 125, 50, 0.22)";
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([8, 4]);
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+      ctx.font = `600 ${Math.max(10, 11 * Math.min(z, 1.8))}px Segoe UI, sans-serif`;
+      ctx.fillStyle = "#1b5e20";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText("Work area — Create balloons inside", x + 6, y + 6);
       ctx.restore();
     }
   };
@@ -517,7 +547,7 @@ export default function BalloonCanvas({
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, balloons, selected, deleteSelected, liveBox, mode, imageUrl, zoomPct, pageGeometry]);
+  }, [ready, balloons, selected, deleteSelected, liveBox, mode, imageUrl, zoomPct, pageGeometry, workArea]);
 
   useEffect(() => {
     const el = canvasRef.current;
@@ -596,9 +626,9 @@ export default function BalloonCanvas({
       return;
     }
     if (e.button !== 0) return;
-    if (busyRef.current && m === "create") return;
+    if (busyRef.current && (m === "create" || m === "area")) return;
 
-    if (m === "create") {
+    if (m === "create" || m === "area") {
       drawingRef.current = true;
       const box = { x0: pt.ix, y0: pt.iy, x1: pt.ix, y1: pt.iy };
       boxRef.current = box;
@@ -668,7 +698,7 @@ export default function BalloonCanvas({
     const pt = clientToImg(e.clientX, e.clientY);
     if (!pt) return;
 
-    if (modeRef.current === "create" && drawingRef.current && boxRef.current) {
+    if ((modeRef.current === "create" || modeRef.current === "area") && drawingRef.current && boxRef.current) {
       const box = { ...boxRef.current, x1: pt.ix, y1: pt.iy };
       boxRef.current = box;
       setLiveBox(box);
@@ -737,6 +767,28 @@ export default function BalloonCanvas({
       return;
     }
 
+    if (modeRef.current === "area" && drawingRef.current) {
+      drawingRef.current = false;
+      const box = boxRef.current;
+      boxRef.current = null;
+      setLiveBox(null);
+      if (!box || !onArea) return;
+      let x0 = Math.min(box.x0, box.x1);
+      let y0 = Math.min(box.y0, box.y1);
+      let x1 = Math.max(box.x0, box.x1);
+      let y1 = Math.max(box.y0, box.y1);
+      if (x1 - x0 < 8 && y1 - y0 < 8) return;
+      const p0 = imgPxToPdf(x0, y0);
+      const p1 = imgPxToPdf(x1, y1);
+      onArea({
+        x: Math.min(p0.x, p1.x),
+        y: Math.min(p0.y, p1.y),
+        width: Math.max(4, Math.abs(p1.x - p0.x)),
+        height: Math.max(4, Math.abs(p1.y - p0.y)),
+      });
+      return;
+    }
+
     if (modeRef.current === "edit" && movedRef.current) {
       movedRef.current = false;
       dragNoRef.current = null;
@@ -751,7 +803,7 @@ export default function BalloonCanvas({
   };
 
   const cursor =
-    mode === "create"
+    mode === "create" || mode === "area"
       ? "crosshair"
       : panningRef.current || mode === "view"
         ? "grab"
@@ -777,7 +829,7 @@ export default function BalloonCanvas({
         </button>
         {savingHint ? <span className="muted viewer-hint saving-hint">Saving…</span> : null}
       </div>
-      <div ref={wrapRef} className={`panel-body canvas-wrap viewer-body ${mode === "create" ? "drawing" : ""}`}>
+      <div ref={wrapRef} className={`panel-body canvas-wrap viewer-body ${mode === "create" || mode === "area" ? "drawing" : ""}`}>
         {!hasImage && (loading || ready === 0) && !failed ? (
           <div className="placeholder">Loading preview…</div>
         ) : !hasImage || failed ? (

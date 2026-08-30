@@ -31,19 +31,40 @@ def _http_json(url: str, headers: dict[str, str], payload: dict) -> dict:
         raise RuntimeError(f"HTTP {e.code}: {body[:500]}") from e
 
 
+def _strict_dim_only() -> bool:
+    return os.environ.get("SMORX_STRICT_DIM", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _build_prompt(
     candidates: list[dict[str, Any]],
     few_shot: list[dict[str, str]],
 ) -> str:
+    strict = _strict_dim_only()
     lines = [
         "You classify engineering-drawing text spans for First Article Inspection ballooning.",
         "Return ONLY valid JSON: {\"results\":[{\"id\":0,\"label\":\"dimension|ignore\",\"confidence\":0.0}]}",
         "",
-        "label=dimension → real measurable callout (linear, diameter, radius, angle, weld size, plate size, fit, THK, etc.)",
-        "label=ignore → item balloon numbers, border grid (A/B/1/2), qty, notes noise, title-block meta, dates, stamps",
-        "Prefer ignore when unsure about circled item numbers or sheet zone marks.",
-        "",
     ]
+    if strict:
+        lines.extend([
+            "STRICT MODE (mandatory — dimensions on main drawing views ONLY):",
+            "label=dimension → real measurable geometry on the part/view (linear, diameter, radius, angle, tolerance, thread, chamfer, fit).",
+            "label=ignore → ALWAYS for:",
+            "  • BOM / bill-of-materials tables, material lists, item numbers, qty (nos/pcs), cut lengths, plate/BUSH/THK rows in BOM columns",
+            "  • title block, revision table, drawing/part numbers, dates, stamps, company names",
+            "  • notes, general tolerance blocks, welds, surface finish (Ra), GD&T, reference dims in parentheses",
+            "  • item balloon numbers, border grid (A/B/1/2), sheet zone marks",
+            "If zone=bom, zone=notes, or zone=title → label=ignore always.",
+            "When unsure → label=ignore.",
+            "",
+        ])
+    else:
+        lines.extend([
+            "label=dimension → real measurable callout (linear, diameter, radius, angle, weld size, plate size, fit, THK, etc.)",
+            "label=ignore → item balloon numbers, border grid (A/B/1/2), qty, notes noise, title-block meta, dates, stamps",
+            "Prefer ignore when unsure about circled item numbers or sheet zone marks.",
+            "",
+        ])
     if few_shot:
         lines.append("Human feedback examples (learn from these):")
         for fs in few_shot[:16]:
@@ -109,7 +130,14 @@ def classify_with_openai(
             "temperature": 0,
             "response_format": {"type": "json_object"},
             "messages": [
-                {"role": "system", "content": "You are a precise FAI ballooning classifier. Reply with JSON only."},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a precise FAI ballooning classifier. Reply with JSON only. "
+                        "In strict mode: balloon only main-view geometry dimensions; "
+                        "never BOM tables, title block, notes, or item numbers."
+                    ),
+                },
                 {"role": "user", "content": prompt},
             ],
         },
