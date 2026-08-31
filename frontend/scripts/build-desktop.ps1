@@ -21,8 +21,8 @@ $env:CARGO_TARGET_DIR = Join-Path $Root "src-tauri\target"
 
 Set-Location $Root
 
-# Desktop EXE must talk to the local backend (not the Cloud Run web URL).
-$env:VITE_API_URL = "http://127.0.0.1:9686"
+# Desktop EXE talks to the deployed production API (customer machines run no local backend).
+$env:VITE_API_URL = "https://autoballoon-api-135072000552.us-central1.run.app"
 npx tauri build --no-bundle
 
 $exe = Join-Path $env:CARGO_TARGET_DIR "release\autoballoon.exe"
