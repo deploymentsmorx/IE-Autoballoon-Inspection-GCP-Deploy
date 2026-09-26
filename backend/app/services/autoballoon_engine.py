@@ -3288,7 +3288,7 @@ def balloon_pdf(
         if ai_fallback and not (ai_api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
             ai_fallback = False
     if ai_fallback and not ai_provider:
-        ai_provider = "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "openai"
+        ai_provider = "openai" if os.environ.get("OPENAI_API_KEY") else ("anthropic" if os.environ.get("ANTHROPIC_API_KEY") else "openai")
     if use_ocr is None:
         use_ocr = os.environ.get("SMORX_OCR_FALLBACK", "1").strip().lower() not in {
             "0", "false", "no", "off",

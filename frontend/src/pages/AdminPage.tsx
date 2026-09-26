@@ -255,7 +255,7 @@ export default function AdminPage() {
                 checked={requireApproval}
                 onChange={(e) => setRequireApproval(e.target.checked)}
               />
-              Require device ID + hostname on EXE activate
+              Require device (EXE only on approved PC)
             </label>
             <label className="row muted" style={{ fontSize: "0.85rem" }}>
               <input
@@ -280,7 +280,7 @@ export default function AdminPage() {
                 resetForm();
                 await loadLists();
                 setMsg(
-                  `Provisioned successfully. Give customer: License ${creds.license}, Install pwd ${creds.installPwd}, Device ${creds.deviceId}, Host ${creds.hostname}, Login ${creds.email} / ${creds.tempPassword}, Tenant ${creds.tenantId}`,
+                  `Send to customer: License ${creds.license}, Install password ${creds.installPwd}, Email ${creds.email}, Temporary password ${creds.tempPassword}. (Device ID / Host stay on their Activate screen.)`,
                 );
               } catch (ex: unknown) {
                 setErr(ex instanceof Error ? ex.message : "Provision failed");

@@ -28,7 +28,7 @@ class Settings:
     aws_secret_access_key: str = (os.getenv("AWS_SECRET_ACCESS_KEY") or "").strip()
     aws_s3_bucket: str = (os.getenv("AWS_S3_BUCKET") or "autoballoon-storage-smorx-prod").strip()
     aws_region: str = (os.getenv("AWS_REGION") or "us-east-1").strip()
-    aws_s3_prefix: str = (os.getenv("AWS_S3_PREFIX") or "autoballoon").strip().strip("/")
+    aws_s3_prefix: str = (os.getenv("AWS_S3_PREFIX") or "").strip().strip("/")
     # Optional override; default matches virtual-hosted–style bucket URL in us-east-1
     aws_s3_url: str = (
         os.getenv("AWS_S3_URL")

@@ -19,7 +19,8 @@ AWS_ACCESS_KEY_ID = (os.getenv("AWS_ACCESS_KEY_ID") or "").strip()
 AWS_SECRET_ACCESS_KEY = (os.getenv("AWS_SECRET_ACCESS_KEY") or "").strip()
 AWS_S3_BUCKET = (os.getenv("AWS_S3_BUCKET") or "autoballoon-storage-smorx-prod").strip()
 AWS_REGION = (os.getenv("AWS_REGION") or "us-east-1").strip()
-S3_PREFIX = (os.getenv("AWS_S3_PREFIX") or "autoballoon").strip().strip("/")
+# Empty prefix = store at bucket root: s3://autoballoon-storage-smorx-prod/{user}/{job}/...
+S3_PREFIX = (os.getenv("AWS_S3_PREFIX") or "").strip().strip("/")
 AWS_S3_URL = (
     os.getenv("AWS_S3_URL")
     or f"https://{AWS_S3_BUCKET}.s3.{AWS_REGION}.amazonaws.com"
@@ -57,9 +58,8 @@ def object_key(job_id: str, name: str, *, username: str | None = None) -> str:
     """Canonical S3 key / relative local path for a job file."""
     safe = Path(name).name.replace("\\", "/").lstrip("/")
     user_seg = sanitize_username(username) if username else None
-    if user_seg:
-        return f"{S3_PREFIX}/{user_seg}/{job_id}/{safe}"
-    return f"{S3_PREFIX}/{job_id}/{safe}"
+    parts = [p for p in (S3_PREFIX, user_seg, job_id, safe) if p]
+    return "/".join(parts)
 
 
 def put_bytes(

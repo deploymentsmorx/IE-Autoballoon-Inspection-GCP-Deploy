@@ -87,37 +87,23 @@ if not audit_mode:
     )
     st.session_state["use_learning"] = use_learning
 
-    with st.expander("AI fallback (OpenAI / Claude)", expanded=False):
+    with st.expander("AI fallback", expanded=False):
         ai_fallback = st.toggle(
             "Enable AI fallback on missed spans",
             value=st.session_state.get("ai_fallback", False),
             help="After vector+learning, classify remaining digit spans with AI (text only).",
         )
         st.session_state["ai_fallback"] = ai_fallback
-        ai_provider = st.selectbox(
-            "Provider",
-            options=["openai", "claude"],
-            index=0 if st.session_state.get("ai_provider", "openai") == "openai" else 1,
-        )
-        st.session_state["ai_provider"] = ai_provider
-        default_key = (
-            os.environ.get("OPENAI_API_KEY", "")
-            if ai_provider == "openai"
-            else os.environ.get("ANTHROPIC_API_KEY", "")
-        )
+        ai_provider = st.session_state.get("ai_provider", "openai")
+        default_key = os.environ.get("OPENAI_API_KEY", "")
         ai_api_key = st.text_input(
             "API key",
             value=st.session_state.get("ai_api_key", default_key),
             type="password",
-            help="Or set OPENAI_API_KEY / ANTHROPIC_API_KEY in the environment.",
+            help="Or set OPENAI_API_KEY in the environment.",
         )
         st.session_state["ai_api_key"] = ai_api_key
-        ai_model = st.text_input(
-            "Model (optional)",
-            value=st.session_state.get("ai_model", ""),
-            placeholder="gpt-4o-mini or claude-sonnet-4-20250514",
-        )
-        st.session_state["ai_model"] = ai_model
+        ai_model = st.session_state.get("ai_model", "")
 
 run_label = "Run Audit" if audit_mode else "Auto Balloon Dimensions"
 if st.button(run_label, type="primary", use_container_width=True):
