@@ -74,6 +74,8 @@ class ReportPayload(BaseModel):
     authorized_signatory: str = ""
     rows: list[ReportRow] = Field(default_factory=list)
     measure_columns: list[MeasureCol] = Field(default_factory=list)
+    # IE Master Sheet header/footer fields; None = leave stored values untouched
+    master_fields: dict[str, str] | None = None
 
 
 class ReportRowsChunk(BaseModel):

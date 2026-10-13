@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, Response
 from app.api.dependencies import require_perm
 from app.core.config import JOBS, UPLOADS
 from app.schemas import BalloonDeleteMany, BalloonUpdate, AreaBalloonRequest, ReportPayload, ReportRowsChunk
+from app.services.master_report import build_master_pdf, build_master_xlsx, ensure_master_fields
 from app.services.report_pdf import (
     build_report_pdf,
     characteristics_to_report_rows,
@@ -306,6 +307,36 @@ def _rows_for_balloon_numbers(
 def _next_balloon_no(balloons: list[dict]) -> int:
     nums = [int(b.get("balloon") or 0) for b in balloons]
     return (max(nums) + 1) if nums else 1
+
+
+def _neighbour_balloon_no(
+    balloons: list[dict], page: int, cx: float, cy: float, mode: str
+) -> int:
+    """Number right after the nearest balloon on the same page."""
+    on_page = [b for b in balloons if int(b.get("page") or 1) == page]
+    if on_page:
+        def dist2(b: dict) -> float:
+            bx = float(b.get("x") or 0) + float(b.get("width") or 0) / 2.0
+            by = float(b.get("y") or 0) + float(b.get("height") or 0) / 2.0
+            return (bx - cx) ** 2 + (by - cy) ** 2
+
+        return int(min(on_page, key=dist2).get("balloon") or 0) + 1
+    if mode == "per_page":
+        return 1
+    earlier = [int(b.get("balloon") or 0) for b in balloons if int(b.get("page") or 1) < page]
+    return (max(earlier) + 1) if earlier else 1
+
+
+def _shift_balloons_from(balloons: list[dict], start: int, page: int, mode: str) -> list[dict]:
+    """Bump every balloon numbered >= start by one to make room for an insert."""
+    out: list[dict] = []
+    for b in balloons:
+        nb = dict(b)
+        in_scope = mode != "per_page" or int(b.get("page") or 1) == page
+        if in_scope and int(b.get("balloon") or 0) >= start:
+            nb["balloon"] = int(b.get("balloon") or 0) + 1
+        out.append(nb)
+    return out
 
 
 def _numbering_mode(meta: dict) -> str:
@@ -1133,6 +1164,7 @@ def get_job(
         _save_meta(job_id, meta)
     _ensure_measure_columns(meta)
     _ensure_report_date(meta)
+    ensure_master_fields(meta)
     # Ensure page_count is available for multi-page UI
     if not meta.get("page_count"):
         files = meta.get("files") or []
@@ -1660,14 +1692,13 @@ def create_balloon(
     if not cleaned and src and src.exists():
         cleaned = _scrape_dim_text(src, page, x, y, width, height)
 
-    balloons = list(meta.get("balloons") or [])
+    prev = list(meta.get("balloons") or [])
+    mode = _numbering_mode(meta)
     if balloon_no is not None and int(balloon_no) > 0:
-        want = int(balloon_no)
-        if any(int(b.get("balloon") or 0) == want for b in balloons):
-            raise HTTPException(status_code=400, detail=f"Balloon #{want} already exists")
-        next_no = want
+        next_no = int(balloon_no)
     else:
-        next_no = _next_balloon_no(balloons)
+        next_no = _neighbour_balloon_no(prev, page, x + width / 2.0, y + height / 2.0, mode)
+    shifted = _shift_balloons_from(prev, next_no, page, mode)
     bx, by = _default_balloon_leader(x, y, width, height)
     new_balloon = {
         "balloon": next_no,
@@ -1684,8 +1715,7 @@ def create_balloon(
         "tx": x + width / 2.0,
         "ty": y + height / 2.0,
     }
-    prev = list(meta.get("balloons") or [])
-    balloons = prev + [new_balloon]
+    balloons = shifted + [new_balloon]
     # learn when we have useful text
     if cleaned:
         try:
@@ -1701,7 +1731,12 @@ def create_balloon(
     meta["balloon_pdf_stale"] = True
     _ensure_measure_columns(meta)
     _save_meta(job_id, meta, sync_files=False)
-    return {"count": len(balloons), "balloons": balloons, "report_rows": rows}
+    return {
+        "count": len(balloons),
+        "balloons": meta["balloons"],
+        "report_rows": rows,
+        "created": next_no,
+    }
 
 
 @router.post("/{job_id}/title-extract")
@@ -1757,6 +1792,8 @@ def save_report(
     meta["supplier_name"] = body.supplier_name
     meta["customer_name"] = body.customer_name
     meta["authorized_signatory"] = body.authorized_signatory
+    if body.master_fields is not None:
+        meta["master_fields"] = {str(k): str(v or "") for k, v in body.master_fields.items()}
     if not headers_only:
         if body.rows:
             rows = [r.model_dump() for r in body.rows]
@@ -1864,6 +1901,7 @@ def download_report_pdf(
         and out_pdf.exists()
         and meta_path.exists()
         and out_pdf.stat().st_mtime >= meta_path.stat().st_mtime
+        and out_pdf.stat().st_mtime >= Path(build_report_pdf.__code__.co_filename).stat().st_mtime
         and out_pdf.stat().st_size > 1000
     ):
         return FileResponse(
@@ -1966,8 +2004,7 @@ def download_excel(
     area_h: float | None = Query(None, gt=0),
     user: dict = Depends(require_perm("read")),
 ):
-    from openpyxl import Workbook
-    from openpyxl.styles import PatternFill
+    from app.services.report_pdf import build_report_xlsx
 
     meta = _load_meta(job_id)
     jd = _job_dir(job_id)
@@ -1982,54 +2019,120 @@ def download_excel(
         area_w=area_w,
         area_h=area_h,
     )
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Inspection"
-    headers = [
-        "S.No", "Page", "Balloon", "Reference", "Nominal", "Tol low", "Tol high",
-        "Instrument", "Unit", "Instr. ID", "Measured 1", "Measured 2", "Measured 3", "Remarks",
-    ]
-    extra = meta.get("measure_columns") or []
-    for col in extra:
-        headers.insert(-1, col.get("label") or "Measured")
-    ws.append(headers)
-    fills = {
-        "green": PatternFill("solid", fgColor="C6EFCE"),
-        "yellow": PatternFill("solid", fgColor="FFEB9C"),
-        "red": PatternFill("solid", fgColor="FFC7CE"),
+    _ensure_measure_columns(meta)
+    _ensure_report_date(meta)
+    payload = {
+        "part_number": meta.get("part_number", ""),
+        "part_name": meta.get("part_name", ""),
+        "revision": meta.get("revision", ""),
+        "material": meta.get("material", ""),
+        "mass": meta.get("mass", ""),
+        "finish": meta.get("finish", ""),
+        "serial_number": meta.get("serial_number", ""),
+        "report_date": meta.get("report_date", ""),
+        "company_name": meta.get("company_name", ""),
+        "supplier_name": meta.get("supplier_name", ""),
+        "customer_name": meta.get("customer_name", ""),
+        "authorized_signatory": meta.get("authorized_signatory", ""),
+        "rows": rows,
+        "measure_columns": meta.get("measure_columns") or default_measure_columns(),
     }
-    for row in rows:
-        measured = list(row.get("measured") or ["", "", ""])
-        while len(measured) < 3:
-            measured.append("")
-        extra_vals = []
-        bkey = str(row.get("balloon"))
-        for col in extra:
-            extra_vals.append((col.get("values") or {}).get(bkey, ""))
-        values = [
-            row.get("sno"), row.get("page", 1), row.get("balloon"), row.get("reference"), row.get("nominal"),
-            row.get("tol_low"), row.get("tol_high"), row.get("instrument"), row.get("unit"),
-            row.get("instr_id"), measured[0], measured[1], measured[2], *extra_vals, row.get("remarks"),
-        ]
-        ws.append(values)
-        r_idx = ws.max_row
-        measure_start = 10
-        all_m = measured[:3] + extra_vals
-        for i, mv in enumerate(all_m):
-            st = measure_status(
-                str(row.get("nominal") or ""),
-                str(row.get("tol_low") or ""),
-                str(row.get("tol_high") or ""),
-                str(mv or ""),
-            )
-            if st in fills:
-                ws.cell(r_idx, measure_start + i).fill = fills[st]
-    out = _job_dir(job_id) / f"inspection_report{suffix}.xlsx"
-    wb.save(out)
+    try:
+        xlsx = build_report_xlsx(payload)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report Excel generation failed: {e}") from e
+    out = jd / f"inspection_report{suffix}.xlsx"
+    out.write_bytes(xlsx)
     return FileResponse(
         out,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=f"{job_id}_inspection_report{suffix}.xlsx",
+    )
+
+
+def _master_payload(meta: dict, rows: list[dict]) -> dict:
+    _ensure_measure_columns(meta)
+    _ensure_report_date(meta)
+    ensure_master_fields(meta)
+    spec_by_balloon: dict[str, str] = {}
+    for b in meta.get("balloons") or []:
+        text = str(b.get("text") or "")
+        bno = b.get("balloon")
+        spec_by_balloon[f"{int(b.get('page') or 1)}:{bno}"] = text
+        spec_by_balloon.setdefault(str(bno), text)
+    return {
+        "part_number": meta.get("part_number", ""),
+        "part_name": meta.get("part_name", ""),
+        "revision": meta.get("revision", ""),
+        "material": meta.get("material", ""),
+        "finish": meta.get("finish", ""),
+        "serial_number": meta.get("serial_number", ""),
+        "report_date": meta.get("report_date", ""),
+        "rows": rows,
+        "measure_columns": meta.get("measure_columns") or default_measure_columns(),
+        "master_fields": meta.get("master_fields") or {},
+        "spec_by_balloon": spec_by_balloon,
+    }
+
+
+@router.get("/{job_id}/report/{kind}/{fmt}")
+def download_template_report(
+    job_id: str,
+    kind: str,
+    fmt: str,
+    page: int | None = Query(None, ge=1),
+    area_page: int | None = Query(None, ge=1),
+    area_x: float | None = Query(None),
+    area_y: float | None = Query(None),
+    area_w: float | None = Query(None, gt=0),
+    area_h: float | None = Query(None, gt=0),
+    user: dict = Depends(require_perm("read")),
+):
+    """Template inspection reports: IE Master Sheet (kind=master) or CMQ_LAB (kind=cmq), PDF or Excel."""
+    from app.services.cmq_report import build_cmq_pdf, build_cmq_xlsx
+
+    builders = {
+        "master": ("IE_MasterSheet_Inspection_report", build_master_pdf, build_master_xlsx),
+        "cmq": ("CMQ_LAB_report", build_cmq_pdf, build_cmq_xlsx),
+    }
+    if kind not in builders:
+        raise HTTPException(status_code=404, detail="Unknown report template")
+    if fmt not in ("pdf", "excel"):
+        raise HTTPException(status_code=404, detail="Format must be pdf or excel")
+    name, build_pdf, build_xlsx = builders[kind]
+    meta = _load_meta(job_id)
+    jd = _job_dir(job_id)
+    suffix = _report_filter_suffix(page, area_page, area_w, area_h)
+    rows = _filtered_report_rows(
+        meta,
+        jd,
+        page=page,
+        area_page=area_page,
+        area_x=area_x,
+        area_y=area_y,
+        area_w=area_w,
+        area_h=area_h,
+    )
+    payload = _master_payload(meta, rows)
+    stem = f"{name}{suffix}"
+    try:
+        if fmt == "pdf":
+            data, ext, media = build_pdf(payload), "pdf", "application/pdf"
+        else:
+            data, ext, media = (
+                build_xlsx(payload),
+                "xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"{name} generation failed: {e}") from e
+    out = jd / f"{stem}.{ext}"
+    out.write_bytes(data)
+    return FileResponse(
+        out,
+        media_type=media,
+        filename=f"{job_id}_{stem}.{ext}",
+        headers={"Cache-Control": "no-store"},
     )
 
 

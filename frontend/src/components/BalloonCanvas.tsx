@@ -80,6 +80,20 @@ function arrowScale(b: Balloon) {
   return s != null && Number.isFinite(s) ? Math.min(2.5, Math.max(0.35, s)) : 1;
 }
 
+type ResizeEdges = { l: boolean; r: boolean; t: boolean; b: boolean };
+
+/** Corner + side-midpoint grips on the selected dim box (fractions of width/height). */
+const RESIZE_HANDLES: { fx: number; fy: number; edges: ResizeEdges; cursor: string }[] = [
+  { fx: 0, fy: 0, edges: { l: true, r: false, t: true, b: false }, cursor: "nwse-resize" },
+  { fx: 1, fy: 0, edges: { l: false, r: true, t: true, b: false }, cursor: "nesw-resize" },
+  { fx: 0, fy: 1, edges: { l: true, r: false, t: false, b: true }, cursor: "nesw-resize" },
+  { fx: 1, fy: 1, edges: { l: false, r: true, t: false, b: true }, cursor: "nwse-resize" },
+  { fx: 0.5, fy: 0, edges: { l: false, r: false, t: true, b: false }, cursor: "ns-resize" },
+  { fx: 0.5, fy: 1, edges: { l: false, r: false, t: false, b: true }, cursor: "ns-resize" },
+  { fx: 0, fy: 0.5, edges: { l: true, r: false, t: false, b: false }, cursor: "ew-resize" },
+  { fx: 1, fy: 0.5, edges: { l: false, r: true, t: false, b: false }, cursor: "ew-resize" },
+];
+
 /** Edit mode: arrow tip is independent from dim box when tx/ty stored. */
 function isDetachedEdit(b: Balloon, mode: Mode, selected: number | null) {
   return mode === "edit" && selected === b.balloon;
@@ -126,8 +140,8 @@ export default function BalloonCanvas({
   const boxRef = useRef<Box | null>(null);
   const [liveBox, setLiveBox] = useState<Box | null>(null);
   const dragNoRef = useRef<number | null>(null);
-  /** circle | arrow | dim — edit mode only; parts move independently */
-  const dragPartRef = useRef<"circle" | "arrow" | "dim">("circle");
+  /** circle | arrow | dim | resize — edit mode only; parts move independently */
+  const dragPartRef = useRef<"circle" | "arrow" | "dim" | "resize">("circle");
   const dragOriginRef = useRef<{
     ix: number;
     iy: number;
@@ -137,6 +151,9 @@ export default function BalloonCanvas({
     y?: number;
     tx?: number;
     ty?: number;
+    /** Dim box in image px at drag start (resize only). */
+    rect?: { x0: number; y0: number; x1: number; y1: number };
+    edges?: ResizeEdges;
   } | null>(null);
   /** Instant drag coords (avoids waiting on React setState to move circle/arrow). */
   const dragLiveRef = useRef<{
@@ -145,6 +162,8 @@ export default function BalloonCanvas({
     by?: number;
     x?: number;
     y?: number;
+    width?: number;
+    height?: number;
     tx?: number;
     ty?: number;
     arrow_size?: number;
@@ -376,6 +395,22 @@ export default function BalloonCanvas({
       ctx.fill();
     };
 
+    const drawResizeHandles = (rx: number, ry: number, rw: number, rh: number) => {
+      const hs = 3.5;
+      ctx.save();
+      ctx.fillStyle = "#fff";
+      ctx.strokeStyle = "#3d7eff";
+      ctx.lineWidth = 1.25;
+      ctx.setLineDash([]);
+      for (const hd of RESIZE_HANDLES) {
+        const hx = rx + rw * hd.fx;
+        const hy = ry + rh * hd.fy;
+        ctx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
+        ctx.strokeRect(hx - hs, hy - hs, hs * 2, hs * 2);
+      }
+      ctx.restore();
+    };
+
     // Live balloons on the clean input drawing — circle + leader move with drag.
     for (const raw of balloonsRef.current) {
       const live = dragLiveRef.current;
@@ -387,6 +422,8 @@ export default function BalloonCanvas({
               ...(live.by != null ? { by: live.by } : {}),
               ...(live.x != null ? { x: live.x } : {}),
               ...(live.y != null ? { y: live.y } : {}),
+              ...(live.width != null ? { width: live.width } : {}),
+              ...(live.height != null ? { height: live.height } : {}),
               ...(live.tx != null ? { tx: live.tx } : {}),
               ...(live.ty != null ? { ty: live.ty } : {}),
               ...(live.arrow_size != null ? { arrow_size: live.arrow_size } : {}),
@@ -461,6 +498,12 @@ export default function BalloonCanvas({
             Math.max(4, tip.h * z),
           );
           ctx.restore();
+          drawResizeHandles(
+            pan.x + tip.x * z,
+            pan.y + tip.y * z,
+            Math.max(4, tip.w * z),
+            Math.max(4, tip.h * z),
+          );
           const hs = Math.max(5, 6 * Math.min(z, 1.8));
           ctx.fillStyle = "#ff9800";
           ctx.fillRect(ax - hs, ay - hs, hs * 2, hs * 2);
@@ -499,6 +542,14 @@ export default function BalloonCanvas({
           Math.max(4, tip.h * z),
         );
         ctx.restore();
+        if (m === "edit") {
+          drawResizeHandles(
+            pan.x + tip.x * z,
+            pan.y + tip.y * z,
+            Math.max(4, tip.w * z),
+            Math.max(4, tip.h * z),
+          );
+        }
       }
     }
 
@@ -613,6 +664,30 @@ export default function BalloonCanvas({
     return best ? { b: best.b, part: best.part } : null;
   };
 
+  /** Resize grip under the pointer on the selected balloon's dim box (edit mode). */
+  const hitResizeHandle = (
+    vx: number,
+    vy: number,
+  ): { b: Balloon; tip: { x: number; y: number; w: number; h: number }; handle: (typeof RESIZE_HANDLES)[number] } | null => {
+    if (modeRef.current !== "edit" || selectedRef.current == null) return null;
+    const b = balloonsRef.current.find((x) => x.balloon === selectedRef.current);
+    if (!b) return null;
+    const z = zoomRef.current;
+    const pan = panRef.current;
+    const tip = pdfBoxToImg(b.x, b.y, b.width || 20, b.height || 12);
+    const rx = pan.x + tip.x * z;
+    const ry = pan.y + tip.y * z;
+    const rw = Math.max(4, tip.w * z);
+    const rh = Math.max(4, tip.h * z);
+    const grip = 7;
+    for (const handle of RESIZE_HANDLES) {
+      const hx = rx + rw * handle.fx;
+      const hy = ry + rh * handle.fy;
+      if (Math.abs(vx - hx) <= grip && Math.abs(vy - hy) <= grip) return { b, tip, handle };
+    }
+    return null;
+  };
+
   const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     // Allow pan even while a background save runs; only block create/edit/delete writes
     const pt = clientToImg(e.clientX, e.clientY);
@@ -633,6 +708,25 @@ export default function BalloonCanvas({
       const box = { x0: pt.ix, y0: pt.iy, x1: pt.ix, y1: pt.iy };
       boxRef.current = box;
       setLiveBox(box);
+      return;
+    }
+    const grip = hitResizeHandle(pt.vx, pt.vy);
+    if (grip) {
+      dragNoRef.current = grip.b.balloon;
+      dragPartRef.current = "resize";
+      movedRef.current = false;
+      dragOriginRef.current = {
+        ix: pt.ix,
+        iy: pt.iy,
+        rect: {
+          x0: grip.tip.x,
+          y0: grip.tip.y,
+          x1: grip.tip.x + grip.tip.w,
+          y1: grip.tip.y + grip.tip.h,
+        },
+        edges: grip.handle.edges,
+      };
+      onMoveStart?.();
       return;
     }
     const hit = hitBalloon(pt.ix, pt.iy);
@@ -703,6 +797,43 @@ export default function BalloonCanvas({
       boxRef.current = box;
       setLiveBox(box);
       return;
+    }
+
+    if (
+      modeRef.current === "edit" &&
+      dragNoRef.current != null &&
+      dragPartRef.current === "resize" &&
+      dragOriginRef.current?.rect &&
+      dragOriginRef.current.edges &&
+      (e.buttons & 1) === 1
+    ) {
+      const { rect, edges, ix, iy } = dragOriginRef.current;
+      const dx = pt.ix - ix;
+      const dy = pt.iy - iy;
+      const minPx = 3;
+      let { x0, y0, x1, y1 } = rect;
+      if (edges.l) x0 = Math.min(x0 + dx, x1 - minPx);
+      if (edges.r) x1 = Math.max(x1 + dx, x0 + minPx);
+      if (edges.t) y0 = Math.min(y0 + dy, y1 - minPx);
+      if (edges.b) y1 = Math.max(y1 + dy, y0 + minPx);
+      const p0 = imgPxToPdf(x0, y0);
+      const p1 = imgPxToPdf(x1, y1);
+      const patch: Partial<Balloon> = {
+        x: Math.min(p0.x, p1.x),
+        y: Math.min(p0.y, p1.y),
+        width: Math.abs(p1.x - p0.x),
+        height: Math.abs(p1.y - p0.y),
+      };
+      movedRef.current = true;
+      dragLiveRef.current = { no: dragNoRef.current, ...patch };
+      redraw();
+      onMove(dragNoRef.current, patch);
+      return;
+    }
+
+    if (modeRef.current === "edit" && dragNoRef.current == null && canvasRef.current) {
+      const grip = hitResizeHandle(pt.vx, pt.vy);
+      canvasRef.current.style.cursor = grip ? grip.handle.cursor : cursor;
     }
 
     if (modeRef.current === "edit" && dragNoRef.current != null && dragOriginRef.current && (e.buttons & 1) === 1) {

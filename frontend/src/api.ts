@@ -370,7 +370,7 @@ export const api = {
       height?: number;
       balloon?: number;
     }) =>
-    req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[] }>(`/api/jobs/${jobId}/balloons/create`, {
+    req<{ count: number; balloons: Balloon[]; report_rows?: ReportRow[]; created?: number }>(`/api/jobs/${jobId}/balloons/create`, {
       method: "POST",
       body: (() => {
         const fd = new FormData();
@@ -507,6 +507,12 @@ export const api = {
     withAuthQuery(`/api/jobs/${jobId}/report/pdf${reportDownloadQuery(filter)}`),
   downloadExcel: (jobId: string, filter?: ReportDownloadFilter) =>
     withAuthQuery(`/api/jobs/${jobId}/report/excel${reportDownloadQuery(filter)}`),
+  downloadTemplateReport: (
+    jobId: string,
+    kind: "master" | "cmq",
+    fmt: "pdf" | "excel",
+    filter?: ReportDownloadFilter,
+  ) => withAuthQuery(`/api/jobs/${jobId}/report/${kind}/${fmt}${reportDownloadQuery(filter)}`),
   downloadCsv: (jobId: string, filter?: ReportDownloadFilter) =>
     withAuthQuery(`/api/jobs/${jobId}/report/csv${reportDownloadQuery(filter)}`),
   downloadJson: (jobId: string, filter?: ReportDownloadFilter) =>
@@ -737,6 +743,7 @@ export type ReportPayload = {
   authorized_signatory?: string;
   rows: ReportRow[];
   measure_columns: MeasureCol[];
+  master_fields?: Record<string, string>;
 };
 
 export type Job = {
@@ -758,6 +765,7 @@ export type Job = {
   supplier_name?: string;
   customer_name?: string;
   authorized_signatory?: string;
+  master_fields?: Record<string, string>;
   page_geometry?: PageGeometry;
   balloon_numbering?: "continuous" | "per_page";
   status: string;

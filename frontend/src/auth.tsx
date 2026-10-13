@@ -14,6 +14,11 @@ type AuthCtx = {
 
 const Ctx = createContext<AuthCtx | null>(null);
 
+// Runs once per full page load: a browser refresh / reopen starts with a clean workspace,
+// while in-app navigation (e.g. Admin → Inspection) keeps the current job.
+sessionStorage.removeItem("smorx_job");
+localStorage.removeItem("smorx_job");
+
 /** Clear saved inspection job (drawings / balloons / report) from this device. */
 export function clearJobSession() {
   localStorage.removeItem("smorx_job");

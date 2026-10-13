@@ -11,6 +11,9 @@ import fitz
 from app.core.config import STATIC
 
 APP_REPORT_TITLE = "AutoBalloon & Inspection Software System"
+# Quality certificate / template number printed top-right on every report format
+REPORT_CERT_NO = "HQA-TMP12-v3.1"
+C_CERT = (0.85, 0.85, 0.85)
 
 # PDF colors (RGB 0–1)
 C_LABEL = (0.72, 0.85, 0.95)
@@ -200,6 +203,19 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
 
     def draw_page_header(page: fitz.Page, first: bool) -> float:
         y = margin
+        cert = fitz.Rect(page_w - margin - 110, y, page_w - margin, y + 16)
+        shape = page.new_shape()
+        shape.draw_rect(cert)
+        shape.finish(color=(0.45, 0.45, 0.45), fill=C_CERT, width=0.5)
+        shape.commit()
+        tw = fitz.get_text_length(REPORT_CERT_NO, fontname="helv", fontsize=8.5)
+        page.insert_text(
+            fitz.Point(cert.x0 + (cert.width - tw) / 2, cert.y1 - 4.5),
+            REPORT_CERT_NO,
+            fontsize=8.5,
+            fontname="helv",
+            color=C_TEXT,
+        )
         if first and logo_path.exists():
             try:
                 page.insert_image(fitz.Rect(margin, y, margin + 150, y + 38), filename=str(logo_path))
@@ -331,6 +347,193 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
     # garbage=1 is much faster than 3 on 80+ page reports
     doc.save(buf, deflate=True, garbage=1)
     doc.close()
+    return buf.getvalue()
+
+
+def _xl_hex(rgb: tuple[float, float, float]) -> str:
+    return "".join(f"{round(c * 255):02X}" for c in rgb)
+
+
+def build_report_xlsx(payload: dict, logo_path: Path | None = None) -> bytes:
+    """Excel version of the inspection report with the same layout and colours as the PDF."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    logo_path = logo_path or (STATIC / "smorx-logo-full.png")
+    rows = payload.get("rows") or []
+    measure_cols = _measure_cols(payload)
+    measure_maps = [dict(col.get("values") or {}) for col in measure_cols]
+
+    headers = [
+        "S.No", "Balloon\nNo.", "Reference", "Nominal", "Tol\n(low)", "Tol\n(high)",
+        "Instrument", "Unit", "Instr. ID",
+    ]
+    headers += [str(col.get("label") or "M") for col in measure_cols]
+    headers.append("Remarks")
+    n_cols = len(headers)
+    widths = [7, 9, 16, 12, 9, 9, 16, 8, 13] + [12] * len(measure_cols) + [22]
+
+    def fill(rgb: tuple[float, float, float]) -> PatternFill:
+        return PatternFill("solid", fgColor=_xl_hex(rgb))
+
+    thin = Side(style="thin", color=_xl_hex(C_BORDER))
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Inspection Report"
+    ws.sheet_view.showGridLines = False
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Logo + title
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 18
+    if logo_path.exists():
+        try:
+            from openpyxl.drawing.image import Image as XLImage
+
+            img = XLImage(str(logo_path))
+            ratio = 40 / max(1, img.height)
+            img.height = 40
+            img.width = int(img.width * ratio)
+            ws.add_image(img, "A1")
+        except Exception:
+            pass
+    title_c0 = 4
+    ws.merge_cells(start_row=1, start_column=title_c0, end_row=1, end_column=n_cols - 1)
+    ws.merge_cells(start_row=2, start_column=title_c0, end_row=2, end_column=n_cols - 1)
+    cert = ws.cell(1, n_cols, REPORT_CERT_NO)
+    cert.font = Font(size=9)
+    cert.fill = fill(C_CERT)
+    cert.border = Border(left=Side(style="thin", color="737373"), right=Side(style="thin", color="737373"),
+                         top=Side(style="thin", color="737373"), bottom=Side(style="thin", color="737373"))
+    cert.alignment = Alignment(horizontal="center", vertical="center")
+    t = ws.cell(1, title_c0, APP_REPORT_TITLE)
+    t.font = Font(bold=True, size=14)
+    t.alignment = Alignment(horizontal="center", vertical="center")
+    st = ws.cell(2, title_c0, "Inspection Report")
+    st.font = Font(size=11, color="595959")
+    st.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Title grid: two label/value pairs per row, split across the table width
+    half = n_cols // 2
+    pair_spans = [(1, 2, 3, half), (half + 1, half + 2, half + 3, n_cols)]
+    fields = [
+        [("Part Number", "part_number"), ("Part Name", "part_name")],
+        [("Revision", "revision"), ("Material", "material")],
+        [("Mass", "mass"), ("Finish Treatment", "finish")],
+        [("Date", "report_date"), ("Serial Number", "serial_number")],
+        [("Company Name", "company_name"), ("Supplier Name", "supplier_name")],
+        [("Customer Name", "customer_name"), ("Authorized Signatory", "authorized_signatory")],
+    ]
+    r = 4
+    for pairs in fields:
+        ws.row_dimensions[r].height = 20
+        for (label, key), (l0, l1, v0, v1) in zip(pairs, pair_spans):
+            ws.merge_cells(start_row=r, start_column=l0, end_row=r, end_column=l1)
+            ws.merge_cells(start_row=r, start_column=v0, end_row=r, end_column=v1)
+            for c in range(l0, v1 + 1):
+                cell = ws.cell(r, c)
+                cell.border = border
+                cell.fill = fill(C_LABEL if c <= l1 else C_VALUE)
+            lc = ws.cell(r, l0, label)
+            lc.font = Font(bold=True, color=_xl_hex(C_LABEL_TEXT))
+            lc.alignment = left
+            vc = ws.cell(r, v0, _cell_text(payload.get(key, "")))
+            vc.alignment = center
+        r += 1
+
+    # Signature line under the right-hand value column
+    r += 1
+    sig_c0, sig_c1 = pair_spans[1][2], pair_spans[1][3]
+    ws.row_dimensions[r].height = 26
+    r += 1
+    ws.merge_cells(start_row=r, start_column=sig_c0, end_row=r, end_column=sig_c1)
+    sig_line = Side(style="medium", color="40595F")
+    for c in range(sig_c0, sig_c1 + 1):
+        ws.cell(r, c).border = Border(top=sig_line)
+    sc = ws.cell(r, sig_c0, "Authorized Signatory")
+    sc.font = Font(size=9, color="40595F")
+    sc.alignment = Alignment(horizontal="center", vertical="top")
+    r += 2
+
+    # Table header
+    header_row = r
+    ws.row_dimensions[r].height = 32
+    for i, h in enumerate(headers, start=1):
+        cell = ws.cell(r, i, h)
+        cell.font = Font(bold=True)
+        cell.fill = fill(C_HEADER)
+        cell.border = border
+        cell.alignment = center
+    r += 1
+
+    measure_start = 9
+    measure_end = 9 + len(measure_cols)
+    status_fills = {s: fill(_status_color(s)) for s in ("green", "yellow", "red")}
+    band_fills = [fill(C_ROW_A), fill(C_ROW_B)]
+    for ri, row in enumerate(rows):
+        measured = list(row.get("measured") or [])
+        bkey = str(row.get("balloon", ""))
+        measure_vals = []
+        for ci, mmap in enumerate(measure_maps):
+            val = mmap.get(bkey, "")
+            if not val and ci < len(measured):
+                val = measured[ci] or ""
+            measure_vals.append(val)
+        cells = [
+            row.get("sno", ri + 1),
+            row.get("balloon", ""),
+            row.get("reference", ""),
+            row.get("nominal", ""),
+            row.get("tol_low", ""),
+            row.get("tol_high", ""),
+            row.get("instrument", ""),
+            row.get("unit", ""),
+            row.get("instr_id", ""),
+            *measure_vals,
+            row.get("remarks", ""),
+        ]
+        band = band_fills[ri % 2]
+        for i, val in enumerate(cells):
+            value = val if isinstance(val, int) else _cell_text(val)
+            cell = ws.cell(r, i + 1, value)
+            cell.border = border
+            cell.alignment = center
+            cell.fill = band
+            if measure_start <= i < measure_end:
+                status = measure_status(
+                    str(row.get("nominal", "")),
+                    str(row.get("tol_low", "")),
+                    str(row.get("tol_high", "")),
+                    str(val or ""),
+                )
+                if status in status_fills:
+                    cell.fill = status_fills[status]
+        ws.row_dimensions[r].height = 18
+        r += 1
+
+    last_col = get_column_letter(n_cols)
+    ws.freeze_panes = ws.cell(header_row + 1, 1)
+    if rows:
+        ws.auto_filter.ref = f"A{header_row}:{last_col}{r - 1}"
+
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.print_title_rows = f"{header_row}:{header_row}"
+    ws.print_options.horizontalCentered = True
+    ws.page_margins.left = ws.page_margins.right = 0.35
+    ws.page_margins.top = ws.page_margins.bottom = 0.5
+
+    buf = io.BytesIO()
+    wb.save(buf)
     return buf.getvalue()
 
 

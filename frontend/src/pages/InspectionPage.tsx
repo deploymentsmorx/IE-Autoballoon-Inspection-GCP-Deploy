@@ -336,6 +336,16 @@ export default function InspectionPage() {
   }, [jobId]);
 
   useEffect(() => {
+    if (!unsavedEdits) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsavedEdits]);
+
+  useEffect(() => {
     if (job?.balloon_numbering) setNumberingMode(job.balloon_numbering);
   }, [job?.balloon_numbering, job?.id]);
 
@@ -717,9 +727,9 @@ export default function InspectionPage() {
       createBalloonNo.trim() && Number.isFinite(parsedCreateNo) && parsedCreateNo > 0
         ? parsedCreateNo
         : undefined;
-    const nextNo =
-      requestedNo ??
-      Math.max(0, ...(balloonsRef.current.map((b) => Number(b.balloon) || 0))) + 1;
+    const isPerPage = (job?.balloon_numbering || numberingMode) === "per_page";
+    const nextNo = requestedNo ?? neighbourBalloonNo(balloonsRef.current, pg, box, isPerPage);
+    const inScope = (b: Balloon) => !isPerPage || (b.page || 1) === pg;
     const w = box.width || 24;
     const h = box.height || 14;
     const tipX = box.x + w / 2;
@@ -739,7 +749,11 @@ export default function InspectionPage() {
     };
     setErr("");
     pushUndo();
-    const next = [...balloonsRef.current, optimistic];
+    const beforeCreate = balloonsRef.current;
+    const shifted = beforeCreate.map((b) =>
+      inScope(b) && b.balloon >= nextNo ? { ...b, balloon: b.balloon + 1 } : b,
+    );
+    const next = [...shifted, optimistic].sort((a, b) => a.balloon - b.balloon);
     balloonsRef.current = next;
     setJob((j) => (j ? { ...j, balloons: next, status: "ballooned" } : j));
     setMode("edit");
@@ -748,9 +762,11 @@ export default function InspectionPage() {
 
     createQueueRef.current = createQueueRef.current.then(async () => {
       try {
-        const withoutPending = balloonsRef.current.filter((b) => b.balloon !== nextNo);
         if (balloonsDirtyRef.current) {
-          balloonsRef.current = withoutPending;
+          // Server applies the insert shift itself, so persist the pre-insert numbering.
+          balloonsRef.current = balloonsRef.current
+            .filter((b) => b !== optimistic)
+            .map((b) => (inScope(b) && b.balloon > nextNo ? { ...b, balloon: b.balloon - 1 } : b));
           await persistBalloons({ join: false, skipIfClean: true, redrawPdf: false });
           balloonsRef.current = [...balloonsRef.current, optimistic];
           setJob((j) => (j ? { ...j, balloons: balloonsRef.current } : j));
@@ -776,12 +792,14 @@ export default function InspectionPage() {
               : j,
           );
           clearBalloonsDirty();
+          const createdNo = res.created ?? nextNo;
+          setSelected(createdNo);
           if (showReport && res.report_rows?.length) {
-            setAuditMsg(`Balloon #${nextNo} created — inspection report updated.`);
+            setAuditMsg(`Balloon #${createdNo} created — inspection report updated.`);
           }
         }
       } catch (ex: any) {
-        balloonsRef.current = balloonsRef.current.filter((b) => b.balloon !== nextNo);
+        balloonsRef.current = beforeCreate;
         setJob((j) => (j ? { ...j, balloons: balloonsRef.current } : j));
         setSelected(null);
         setErr(ex.message);
@@ -1600,6 +1618,75 @@ function defaultMeasureCols(): MeasureCol[] {
   ];
 }
 
+/** Number right after the nearest balloon on the same page (mirrors backend create logic). */
+function neighbourBalloonNo(
+  balloons: Balloon[],
+  page: number,
+  box: { x: number; y: number; width: number; height: number },
+  perPage: boolean,
+): number {
+  const cx = box.x + (box.width || 0) / 2;
+  const cy = box.y + (box.height || 0) / 2;
+  const onPage = balloons.filter((b) => (b.page || 1) === page);
+  if (onPage.length) {
+    let best = onPage[0];
+    let bestD = Infinity;
+    for (const b of onPage) {
+      const dx = b.x + (b.width || 0) / 2 - cx;
+      const dy = b.y + (b.height || 0) / 2 - cy;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) {
+        bestD = d;
+        best = b;
+      }
+    }
+    return best.balloon + 1;
+  }
+  if (perPage) return 1;
+  const earlier = balloons.filter((b) => (b.page || 1) < page).map((b) => b.balloon);
+  return earlier.length ? Math.max(...earlier) + 1 : 1;
+}
+
+/** IE Master Sheet header/footer fields (defaults are filled in by the backend). */
+const MASTER_FIELD_LABELS: [string, string][] = [
+  ["location", "Location"],
+  ["supplier", "Supplier Name & Code"],
+  ["qty_offered", "Qty. Offered"],
+  ["lot_size", "Lot size"],
+  ["ir_no", "Inspection Report No."],
+  ["sample_size", "Sample size"],
+  ["prev_fai", "Previous FAI No & Date"],
+  ["po_no", "PO No"],
+  ["project_no", "Project No."],
+  ["wo_no", "W.O/ Receipt No."],
+  ["heat_no", "Heat No."],
+  ["route_card", "Route Card No"],
+  ["test_reports", "Test Reports"],
+  ["dcr_no", "DCR No"],
+  ["concession_no", "Concession No"],
+  ["visual_inspection", "Visual Inspection"],
+  ["inspected_qty", "Inspected Quantity"],
+  ["accepted", "Accepted"],
+  ["rejected", "Rejected"],
+  ["remarks", "Remarks"],
+  ["note", "Note"],
+  ["inspected_by", "Inspected By"],
+  ["approved_by", "Witnessed/Approved By"],
+  ["customer_sign", "Customer (if Applicable)"],
+];
+
+/** CMQ_LAB report fields (stored alongside master fields with a cmq_ prefix). */
+const CMQ_FIELD_LABELS: [string, string][] = [
+  ["cmq_company", "Company"],
+  ["cmq_doc_no", "Doc No"],
+  ["cmq_title", "Report title"],
+  ["cmq_drawing_no", "Drawing Number (blank = Part Number)"],
+  ["cmq_qty", "Qty"],
+  ["cmq_inspected_by", "Inspected By"],
+  ["cmq_approved_by", "Approved By"],
+  ["cmq_comments", "Comments"],
+];
+
 function nowReportDate() {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -1679,6 +1766,7 @@ function ReportPanel({
   const [supplierName, setSupplierName] = useState(job.supplier_name || "");
   const [customerName, setCustomerName] = useState(job.customer_name || "");
   const [authorizedSignatory, setAuthorizedSignatory] = useState(job.authorized_signatory || "");
+  const [masterFields, setMasterFields] = useState<Record<string, string>>(job.master_fields || {});
   const [rows, setRows] = useState<ReportRow[]>(() =>
     (job.report_rows || []).length
       ? job.report_rows || []
@@ -1773,6 +1861,7 @@ function ReportPanel({
     setSupplierName(job.supplier_name || "");
     setCustomerName(job.customer_name || "");
     setAuthorizedSignatory(job.authorized_signatory || "");
+    setMasterFields(job.master_fields || {});
     setPage(0);
     setViewPageNum(defaultPage);
   }, [job, defaultPage]);
@@ -1837,6 +1926,12 @@ function ReportPanel({
     setBusy(true);
     setMsg("");
     try {
+      // Extract reloads the job afterwards, so persist pending edits first or they are lost.
+      if (rowsDirty) {
+        await api.saveReportChunked(jobId, payload(), (m) => setMsg(m));
+      } else if (reportDirty) {
+        await api.saveReport(jobId, { ...payload(), rows: [] }, { localOnly: true, headersOnly: true });
+      }
       const res = await api.extractTitle(jobId);
       if (res.part_number) setPartNumber(res.part_number);
       if (res.part_name) setPartName(res.part_name);
@@ -1890,7 +1985,13 @@ function ReportPanel({
     authorized_signatory: authorizedSignatory,
     rows,
     measure_columns: cols,
+    master_fields: masterFields,
   });
+
+  const setMasterField = (key: string) => (v: string) => {
+    markReportDirty();
+    setMasterFields((m) => ({ ...m, [key]: v }));
+  };
 
   const save = async () => {
     setBusy(true);
@@ -1952,6 +2053,35 @@ function ReportPanel({
           ? e
           : e?.message || e?.error || (e != null ? String(e) : "") || "Report PDF download failed";
       onError(detail);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const downloadTemplate = async (kind: "master" | "cmq", fmt: "pdf" | "excel") => {
+    const name = kind === "master" ? "IE_MasterSheet_Inspection_report" : "CMQ_LAB_report";
+    const fmtLabel = fmt === "pdf" ? "PDF" : "Excel";
+    setBusy(true);
+    setMsg(`Preparing ${name} ${fmtLabel} (${scopeLabel})…`);
+    try {
+      if (rowsDirty) {
+        await api.saveReportChunked(jobId, payload(), (m) => setMsg(m));
+      } else if (reportDirty) {
+        await api.saveReport(jobId, { ...payload(), rows: [] }, { localOnly: true, headersOnly: true });
+      }
+      setRowsDirty(false);
+      setReportDirty(false);
+      const srcName = job.files?.[0]?.name || "";
+      const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
+      const ext = fmt === "pdf" ? "pdf" : "xlsx";
+      const savedPath = await api.downloadFile(
+        api.downloadTemplateReport(jobId, kind, fmt, downloadFilter),
+        `${stem}_${name}${reportFilterSuffix(downloadFilter)}.${ext}`,
+      );
+      setMsg(`${name} ${fmtLabel} (${scopeLabel}) saved to:\n${savedPath}`);
+    } catch (e: any) {
+      setMsg("");
+      onError(e.message || `${name} download failed`);
     } finally {
       setBusy(false);
     }
@@ -2034,20 +2164,40 @@ function ReportPanel({
               </select>
             </label>
           </div>
-          <div className="row report-download-formats">
-            <span className="muted report-download-label">Download format:</span>
-            <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadPdf()}>
-              {busy ? "Working…" : "Report PDF"}
-            </button>
-            <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadExport("excel")}>
-              Excel
-            </button>
-            <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadExport("csv")}>
-              CSV
-            </button>
-            <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadExport("json")}>
-              JSON
-            </button>
+          <div className="report-download-groups">
+            <div className="row report-download-formats">
+              <span className="muted report-download-label">Inspection report:</span>
+              <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadPdf()}>
+                {busy ? "Working…" : "Report PDF"}
+              </button>
+              <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadExport("excel")}>
+                Excel
+              </button>
+              <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadExport("csv")}>
+                CSV
+              </button>
+              <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadExport("json")}>
+                JSON
+              </button>
+            </div>
+            <div className="row report-download-formats">
+              <span className="muted report-download-label">IE_MasterSheet_Inspection_report:</span>
+              <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadTemplate("master", "pdf")}>
+                PDF
+              </button>
+              <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadTemplate("master", "excel")}>
+                Excel
+              </button>
+            </div>
+            <div className="row report-download-formats">
+              <span className="muted report-download-label">CMQ_LAB_report:</span>
+              <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadTemplate("cmq", "pdf")}>
+                PDF
+              </button>
+              <button className="btn btn-outline btn-sm" disabled={busy || !filteredRows.length} onClick={() => void downloadTemplate("cmq", "excel")}>
+                Excel
+              </button>
+            </div>
           </div>
         </div>
 
@@ -2070,6 +2220,24 @@ function ReportPanel({
           <TitleField label="Customer Name" value={customerName} onChange={setHeader(setCustomerName)} />
           <TitleField label="Authorized Signatory" value={authorizedSignatory} onChange={setHeader(setAuthorizedSignatory)} wide />
         </div>
+
+        <details className="report-master-fields mb">
+          <summary>IE Master Sheet fields (used only in IE_MasterSheet_Inspection_report)</summary>
+          <div className="report-title-block">
+            {MASTER_FIELD_LABELS.map(([key, label]) => (
+              <TitleField key={key} label={label} value={masterFields[key] || ""} onChange={setMasterField(key)} />
+            ))}
+          </div>
+        </details>
+
+        <details className="report-master-fields mb">
+          <summary>CMQ_LAB fields (used only in CMQ_LAB_report)</summary>
+          <div className="report-title-block">
+            {CMQ_FIELD_LABELS.map(([key, label]) => (
+              <TitleField key={key} label={label} value={masterFields[key] || ""} onChange={setMasterField(key)} />
+            ))}
+          </div>
+        </details>
 
         <div className="row-between mb">
           <div className="row report-col-tools">

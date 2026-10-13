@@ -568,6 +568,14 @@ input, select, button, textarea { font: inherit; }
   flex-wrap: wrap;
   align-items: center;
 }
+.report-master-fields > summary {
+  cursor: pointer;
+  padding: 6px 0;
+  font-weight: 600;
+}
+.report-master-fields[open] > summary {
+  margin-bottom: 6px;
+}
 .report-download-label {
   font-size: 0.9rem;
   margin-right: 4px;
