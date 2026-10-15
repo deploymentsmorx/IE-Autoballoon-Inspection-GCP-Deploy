@@ -1,6 +1,8 @@
 # Secrets
 .env
 .env.production
+.env.smorx-inspection.production
+.secrets/
 backend/.env
 *.pem
 *.key

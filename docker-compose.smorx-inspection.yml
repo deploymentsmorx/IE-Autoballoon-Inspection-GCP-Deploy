@@ -1,0 +1,58 @@
+# SmorX Inspection stack — uniquely named so it can share a host with other SmorX apps
+# (e.g. smorx-multisheet-server already listening on 9686 / 8080).
+#
+# Required on the host (never committed):
+#   .env.smorx-inspection.production   app settings (DATABASE_URL, JWT_SECRET, CORS_ORIGINS, VITE_API_URL, …)
+#   .secrets/aws/credentials           AWS shared-credentials file, mounted read-only
+#
+# Usage:
+#   docker compose -f docker-compose.smorx-inspection.yml \
+#     --env-file .env.smorx-inspection.production up -d --build
+
+name: smorx-inspection
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: smorx-inspection-api:latest
+    container_name: smorx-inspection-api
+    restart: unless-stopped
+    env_file:
+      - .env.smorx-inspection.production
+    environment:
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      # boto3 reads keys from the mounted file when AWS_ACCESS_KEY_ID is blank
+      AWS_SHARED_CREDENTIALS_FILE: /run/secrets/aws/credentials
+      AWS_PROFILE: ${SMORX_INSPECTION_AWS_PROFILE:-smorx-inspection}
+    ports:
+      - "${SMORX_INSPECTION_API_PORT:-19686}:9686"
+    volumes:
+      - smorx-inspection-data:/app/data
+      - ./.secrets/aws/credentials:/run/secrets/aws/credentials:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9686/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    image: smorx-inspection-web:latest
+    container_name: smorx-inspection-web
+    restart: unless-stopped
+    ports:
+      - "${SMORX_INSPECTION_WEB_PORT:-18080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  smorx-inspection-data:
+    name: smorx-inspection-data
