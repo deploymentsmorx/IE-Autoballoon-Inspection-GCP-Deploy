@@ -69,7 +69,7 @@ services:
     container_name: smorx-inspection-web
     restart: unless-stopped
     ports:
-      - "${SMORX_INSPECTION_WEB_PORT:-18080}:80"
+      - "${SMORX_INSPECTION_WEB_PORT:-18080}:8080"
     depends_on:
       api:
         condition: service_healthy
