@@ -141,31 +141,47 @@ def init_db(hash_password) -> str:
 
     if _try_connect():
         assert engine is not None and SessionLocal is not None
-        Base.metadata.create_all(bind=engine)
-        ensure_commercial_schema()
-        with SessionLocal() as db:
-            admin = db.scalar(select(User).where(User.email == "admin@smorx.ai"))
-            if admin is None:
-                db.add(
-                    User(
-                        id="u-admin",
-                        username="admin",
-                        email="admin@smorx.ai",
-                        full_name="Super Admin",
-                        password_hash=hash_password("admin123"),
-                        role="super_admin",
-                        org_id=None,
-                        customer_id=None,
-                        active=True,
-                        perm_read=True,
-                        perm_write=True,
-                        perm_delete=True,
-                    )
-                )
-                db.commit()
+        # Multiple uvicorn workers boot at once; serialize schema creation + seeding
+        # or concurrent CREATE TABLE on a fresh database fails with a duplicate pg_type.
+        with engine.connect() as lock_conn:
+            lock_conn.exec_driver_sql("SELECT pg_advisory_lock(726519)")
+            lock_conn.commit()
+            try:
+                _create_schema_and_seed(hash_password)
+            finally:
+                lock_conn.exec_driver_sql("SELECT pg_advisory_unlock(726519)")
+                lock_conn.commit()
         return "neon"
 
     from app import local_store
 
     local_store.ensure_seed(hash_password)
     return "json"
+
+
+def _create_schema_and_seed(hash_password) -> None:
+    from app.models import User
+
+    assert engine is not None and SessionLocal is not None
+    Base.metadata.create_all(bind=engine)
+    ensure_commercial_schema()
+    with SessionLocal() as db:
+        admin = db.scalar(select(User).where(User.email == "admin@smorx.ai"))
+        if admin is None:
+            db.add(
+                User(
+                    id="u-admin",
+                    username="admin",
+                    email="admin@smorx.ai",
+                    full_name="Super Admin",
+                    password_hash=hash_password("admin123"),
+                    role="super_admin",
+                    org_id=None,
+                    customer_id=None,
+                    active=True,
+                    perm_read=True,
+                    perm_write=True,
+                    perm_delete=True,
+                )
+            )
+            db.commit()
