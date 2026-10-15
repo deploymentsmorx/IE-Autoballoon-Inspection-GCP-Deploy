@@ -18,11 +18,9 @@ services:
     image: postgres:16-alpine
     container_name: smorx-inspection-db
     restart: unless-stopped
-    # Only POSTGRES_* are passed in; the DB is reachable from the api container only (no host port)
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    # Reachable from the api container only (no host port)
+    env_file:
+      - .env.smorx-inspection.production
     volumes:
       - smorx-inspection-pgdata:/var/lib/postgresql/data
     healthcheck:

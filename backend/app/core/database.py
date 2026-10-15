@@ -57,7 +57,7 @@ def _try_connect() -> bool:
             if attempt < attempts:
                 time.sleep(2 * attempt)
 
-    print(f"[smorx] Neon unavailable ({last_err.__class__.__name__}); using local JSON store.")
+    print(f"[smorx] PostgreSQL unavailable ({last_err.__class__.__name__}); using local JSON store.")
     USE_POSTGRES = False
     engine = None
     SessionLocal = None
@@ -134,24 +134,26 @@ def ensure_commercial_schema() -> None:
                 db.rollback()
 
 
+_SCHEMA_LOCK_ID = 864_210_001
+
+
 def init_db(hash_password) -> str:
-    """Create tables / seed admin. Returns 'neon' or 'json'."""
+    """Create tables / seed admin. Returns 'postgres' or 'json'."""
     # Import models so they register on Base.metadata
     from app.models import ApprovedDevice, Customer, Installation, Job, Organization, User  # noqa: F401
 
     if _try_connect():
         assert engine is not None and SessionLocal is not None
-        # Multiple uvicorn workers boot at once; serialize schema creation + seeding
-        # or concurrent CREATE TABLE on a fresh database fails with a duplicate pg_type.
+        # Several uvicorn workers start at once; serialise schema creation and the
+        # admin seed or concurrent CREATE TABLE / INSERT fail and kill a worker.
         with engine.connect() as lock_conn:
-            lock_conn.exec_driver_sql("SELECT pg_advisory_lock(726519)")
-            lock_conn.commit()
+            lock_conn.exec_driver_sql(f"SELECT pg_advisory_lock({_SCHEMA_LOCK_ID})")
             try:
                 _create_schema_and_seed(hash_password)
             finally:
-                lock_conn.exec_driver_sql("SELECT pg_advisory_unlock(726519)")
+                lock_conn.exec_driver_sql(f"SELECT pg_advisory_unlock({_SCHEMA_LOCK_ID})")
                 lock_conn.commit()
-        return "neon"
+        return "postgres"
 
     from app import local_store
 
