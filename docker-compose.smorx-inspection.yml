@@ -2,7 +2,9 @@
 # (e.g. smorx-multisheet-server already listening on 9686 / 8080).
 #
 # Required on the host (never committed):
-#   .env.smorx-inspection.production   app settings (DATABASE_URL, JWT_SECRET, CORS_ORIGINS, VITE_API_URL, …)
+#   .env.smorx-inspection.production   app settings (POSTGRES_*, DATABASE_URL, JWT_SECRET, CORS_ORIGINS, VITE_API_URL, …)
+#                                      DATABASE_URL must point at the bundled db service, e.g.
+#                                      postgresql://<POSTGRES_USER>:<POSTGRES_PASSWORD>@db:5432/<POSTGRES_DB>
 #   .secrets/aws/credentials           AWS shared-credentials file, mounted read-only
 #
 # Usage:
@@ -12,6 +14,24 @@
 name: smorx-inspection
 
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: smorx-inspection-db
+    restart: unless-stopped
+    # Only POSTGRES_* are passed in; the DB is reachable from the api container only (no host port)
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - smorx-inspection-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
   api:
     build:
       context: ./backend
@@ -25,9 +45,12 @@ services:
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
       # boto3 reads keys from the mounted file when AWS_ACCESS_KEY_ID is blank
       AWS_SHARED_CREDENTIALS_FILE: /run/secrets/aws/credentials
-      AWS_PROFILE: ${SMORX_INSPECTION_AWS_PROFILE:-smorx-inspection}
+      AWS_PROFILE: ${SMORX_INSPECTION_AWS_PROFILE:-default}
     ports:
       - "${SMORX_INSPECTION_API_PORT:-19686}:9686"
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
       - smorx-inspection-data:/app/data
       - ./.secrets/aws/credentials:/run/secrets/aws/credentials:ro
@@ -56,3 +79,5 @@ services:
 volumes:
   smorx-inspection-data:
     name: smorx-inspection-data
+  smorx-inspection-pgdata:
+    name: smorx-inspection-pgdata
