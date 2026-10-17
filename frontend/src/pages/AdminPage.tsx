@@ -32,7 +32,7 @@ export default function AdminPage() {
   const [installs, setInstalls] = useState<Installation[]>([]);
 
   const [companyName, setCompanyName] = useState("");
-  const [productCode, setProductCode] = useState<"autoballoon" | "costsheet">("costsheet");
+  const productCode = "costsheet";
   const [licenseKey, setLicenseKey] = useState("");
   const [installPwd, setInstallPwd] = useState("");
   const [deviceId, setDeviceId] = useState("");
@@ -73,7 +73,6 @@ export default function AdminPage() {
 
   const resetForm = () => {
     setCompanyName("");
-    setProductCode("costsheet");
     setLicenseKey("");
     setInstallPwd("");
     setDeviceId("");
@@ -175,17 +174,6 @@ export default function AdminPage() {
               gap: 12,
             }}
           >
-            <div className="field">
-              <label>Product</label>
-              <select
-                style={inputStyle}
-                value={productCode}
-                onChange={(e) => setProductCode(e.target.value as "autoballoon" | "costsheet")}
-              >
-                <option value="autoballoon">AutoBalloon</option>
-                <option value="costsheet">Cost Sheet</option>
-              </select>
-            </div>
             <div className="field">
               <label>Company / organization name</label>
               <input
@@ -362,7 +350,7 @@ export default function AdminPage() {
               {customers.map((c) => (
                 <tr key={c.customer_id}>
                   <td>{c.organization}</td>
-                  <td>{c.product_code === "costsheet" ? "Cost Sheet" : "AutoBalloon"}</td>
+                  <td>{c.product_code === "costsheet" ? "Cost Sheet" : "Other product"}</td>
                   <td>
                     <code>{c.license_key}</code>
                   </td>
