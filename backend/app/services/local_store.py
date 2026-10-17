@@ -1,4 +1,4 @@
-"""Local JSON fallback when Neon is unreachable."""
+"""Local JSON fallback when Postgres is unreachable."""
 
 from __future__ import annotations
 

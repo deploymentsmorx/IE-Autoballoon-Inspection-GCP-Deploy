@@ -25,7 +25,7 @@ Health: `GET http://127.0.0.1:9686/api/health`
 ## Architecture
 
 ```
-AutoBalloon.exe → FastAPI → Neon Postgres (metadata)
+AutoBalloon.exe → FastAPI → AWS Postgres (metadata)
                          → AWS S3 (PDF files; local fallback)
 ```
 

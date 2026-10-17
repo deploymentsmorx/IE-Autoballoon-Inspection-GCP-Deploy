@@ -59,9 +59,9 @@ def change_password(body: ChangePasswordRequest, user: dict = Depends(current_us
 
 
 @router.get("/api/auth/device-status")
-def device_status(device_id: str):
+def device_status(device_id: str, product_code: str = "autoballoon"):
     """Lets the desktop app re-confirm activation after a reinstall wipes its local flag."""
-    return license_service.device_status(device_id)
+    return license_service.device_status(device_id, product_code=product_code)
 
 
 @router.post("/api/auth/activate")
@@ -74,4 +74,5 @@ def activate_license(body: LicenseActivateRequest):
         device_id=body.device_id,
         hostname=body.hostname,
         install_password=body.install_password,
+        product_code=body.product_code,
     )

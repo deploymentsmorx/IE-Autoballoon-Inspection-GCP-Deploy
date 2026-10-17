@@ -1,4 +1,4 @@
-"""Wipe commercial test data from Neon. Keeps super_admin only.
+"""Wipe commercial test data from Postgres. Keeps super_admin only.
 
 Run from backend folder:
   python scripts/purge_demo_data.py
@@ -20,7 +20,7 @@ from app.models import ApprovedDevice, Customer, Installation, Job, Organization
 
 def purge() -> None:
     if not dbmod._try_connect() or dbmod.SessionLocal is None:
-        print("Neon not connected — check backend/.env DATABASE_URL")
+        print("Postgres not connected — check backend/.env DATABASE_URL")
         sys.exit(1)
 
     with dbmod.SessionLocal() as db:
@@ -40,7 +40,7 @@ def purge() -> None:
         db.commit()
 
         admin = db.scalar(select(User).where(User.role == "super_admin"))
-        print("Purge complete (Neon):")
+        print("Purge complete (Postgres):")
         print(f"  jobs removed:           {j}")
         print(f"  installations removed:  {inst}")
         print(f"  approved devices removed: {dev}")

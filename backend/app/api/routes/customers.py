@@ -26,6 +26,7 @@ def create_customer(body: CustomerCreate, _: dict = Depends(require_admin)):
         org_id=body.org_id,
         install_password=body.install_password,
         require_device_approval=body.require_device_approval,
+        product_code=body.product_code,
     )
 
 
@@ -37,6 +38,7 @@ def update_customer(customer_id: str, body: CustomerUpdate, _: dict = Depends(re
         install_password=body.install_password,
         require_device_approval=body.require_device_approval,
         org_id=body.org_id,
+        product_code=body.product_code,
     )
 
 

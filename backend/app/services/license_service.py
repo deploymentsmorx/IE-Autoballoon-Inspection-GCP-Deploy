@@ -12,9 +12,10 @@ from app.core import database as dbmod
 from app.core.security import create_token, verify_password
 from app.models import ApprovedDevice, Customer, Installation, User
 from app.services import auth_service
+from app.services.customer_service import _normalize_product
 
 
-def device_status(device_id: str) -> dict:
+def device_status(device_id: str, product_code: str = "autoballoon") -> dict:
     """
     Server-side truth for "is this machine already activated?", keyed by the
     Windows MachineGuid (stable across app reinstalls/updates, unlike the
@@ -25,6 +26,11 @@ def device_status(device_id: str) -> dict:
 
     device_id = device_id.strip().upper()
     if not device_id:
+        return {"activated": False}
+
+    try:
+        product_code = _normalize_product(product_code)
+    except HTTPException:
         return {"activated": False}
 
     with dbmod.SessionLocal() as db:
@@ -39,11 +45,15 @@ def device_status(device_id: str) -> dict:
         customer = db.get(Customer, inst.customer_id)
         if customer is None or customer.status != "Active":
             return {"activated": False}
+        cust_product = getattr(customer, "product_code", None) or "autoballoon"
+        if cust_product != product_code:
+            return {"activated": False}
         return {
             "activated": True,
             "license_key": customer.license_key,
             "customer_id": customer.customer_id,
             "installation_id": inst.installation_id,
+            "product_code": cust_product,
         }
 
 
@@ -54,7 +64,7 @@ def verify_device_for_login(customer_id: str, device_id: str, hostname: str) -> 
     mismatch or missing/inactive installation.
     """
     if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (Neon) unavailable")
+        raise HTTPException(status_code=503, detail="License server (database) unavailable")
 
     device_id = device_id.strip().upper()
     hostname = hostname.strip()
@@ -86,14 +96,16 @@ def activate_installation(
     device_id: str,
     hostname: str = "",
     install_password: str = "",
+    product_code: str = "autoballoon",
 ) -> dict:
     """
     First-launch EXE flow:
       install password + license + user + admin-provided device_id/hostname → bind → JWT
     """
     if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (Neon) unavailable")
+        raise HTTPException(status_code=503, detail="License server (database) unavailable")
 
+    product_code = _normalize_product(product_code)
     license_key = license_key.strip()
     device_id = device_id.strip().upper()
     hostname = hostname.strip()
@@ -113,6 +125,13 @@ def activate_installation(
         customer = db.scalar(select(Customer).where(Customer.license_key == license_key))
         if customer is None or customer.status != "Active":
             raise HTTPException(status_code=403, detail="Invalid or inactive license")
+
+        cust_product = getattr(customer, "product_code", None) or "autoballoon"
+        if cust_product != product_code:
+            raise HTTPException(
+                status_code=403,
+                detail=f"This license is for '{cust_product}', not '{product_code}'",
+            )
 
         if customer.install_password_hash:
             if not install_password or not verify_password(install_password, customer.install_password_hash):
@@ -200,6 +219,7 @@ def activate_installation(
                 "organization": customer.organization,
                 "license_key": customer.license_key,
                 "status": customer.status,
+                "product_code": cust_product,
             },
             "installation": {
                 "installation_id": inst.installation_id,

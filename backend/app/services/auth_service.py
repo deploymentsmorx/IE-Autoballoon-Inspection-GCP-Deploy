@@ -1,4 +1,4 @@
-"""Auth / org / engineer store facade (Neon + JSON fallback)."""
+"""Auth / org / engineer store facade (Postgres + JSON fallback)."""
 
 from __future__ import annotations
 

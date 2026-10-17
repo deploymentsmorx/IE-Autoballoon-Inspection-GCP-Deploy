@@ -1,4 +1,4 @@
-"""Job metadata persistence in Neon (+ local meta.json mirror for previews)."""
+"""Job metadata persistence in Postgres (+ local meta.json mirror for previews)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def _now() -> datetime:
 
 
 def ensure_job_schema() -> None:
-    """Add new columns on existing Neon DBs (create_all does not ALTER)."""
+    """Add new columns on existing Postgres DBs (create_all does not ALTER)."""
     if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
         return
     alters = [
@@ -72,7 +72,7 @@ def ensure_job_schema() -> None:
 
 
 def upsert_job_from_meta(meta: dict, *, input_key: str | None = None, output_key: str | None = None) -> dict | None:
-    """Mirror job meta.json into Neon jobs table."""
+    """Mirror job meta.json into Postgres jobs table."""
     if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
         return None
     job_id = str(meta.get("id") or "")
@@ -162,7 +162,7 @@ def _resolve_owner_username(meta: dict) -> str:
 def sync_job_files_to_storage(job_id: str, local_dir, meta: dict) -> dict:
     """
     Upload input (and output if present) PDFs to S3 when enabled.
-    Updates meta with storage keys and Neon row.
+    Updates meta with storage keys and Postgres row.
     """
     files = meta.get("files") or []
     input_key = None

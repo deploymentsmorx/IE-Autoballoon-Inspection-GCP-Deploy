@@ -11,9 +11,9 @@ def test_password_roundtrip():
 
 
 def test_find_admin_seed():
-    # Requires Neon or local JSON seed from startup
+    # Requires Postgres or local JSON seed from startup
     mode = auth_service.startup(hash_password)
-    assert mode in {"neon", "json"}
+    assert mode in {"postgres", "json"}
     user = auth_service.find_user_by_login("admin@smorx.ai")
     assert user is not None
     assert user["role"] == "super_admin"

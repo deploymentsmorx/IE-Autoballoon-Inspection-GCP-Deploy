@@ -1,5 +1,8 @@
 # Build AutoBalloon.exe (Windows)
 # Requires: Rust, Node, VS Build Tools (C++), WebView2 Runtime
+param(
+  [string]$ApiUrl = "http://100.51.165.76:9686"
+)
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -22,7 +25,8 @@ $env:CARGO_TARGET_DIR = Join-Path $Root "src-tauri\target"
 Set-Location $Root
 
 # Desktop EXE talks to the deployed production API (customer machines run no local backend).
-$env:VITE_API_URL = "https://autoballoon-api-135072000552.us-central1.run.app"
+Write-Host "VITE_API_URL = $ApiUrl"
+$env:VITE_API_URL = $ApiUrl.TrimEnd("/")
 npx tauri build --no-bundle
 
 $exe = Join-Path $env:CARGO_TARGET_DIR "release\autoballoon.exe"

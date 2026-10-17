@@ -1,4 +1,4 @@
-"""Job metadata persistence in Neon (+ local meta.json mirror)."""
+"""Job metadata persistence in Postgres (+ local meta.json mirror)."""
 
 from __future__ import annotations
 

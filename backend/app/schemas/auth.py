@@ -43,3 +43,5 @@ class LicenseActivateRequest(BaseModel):
     device_id: str
     hostname: str = ""
     install_password: str = ""
+    # Which desktop product is activating (autoballoon | costsheet)
+    product_code: str = "autoballoon"

@@ -1,4 +1,4 @@
-"""Neon / Postgres facade — models live in app.models, engine in app.core.database."""
+"""Postgres facade — models live in app.models, engine in app.core.database."""
 
 from __future__ import annotations
 

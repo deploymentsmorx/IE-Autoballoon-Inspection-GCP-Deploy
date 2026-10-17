@@ -1,4 +1,4 @@
-"""Unified user/org store: Neon when available, else local JSON."""
+"""Unified user/org store: Postgres when available, else local JSON."""
 
 from __future__ import annotations
 

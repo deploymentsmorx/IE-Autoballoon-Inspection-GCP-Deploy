@@ -230,6 +230,7 @@ export const api = {
     device_id: string;
     hostname: string;
     install_password: string;
+    product_code?: string;
   }) =>
     req<{
       token: string;
@@ -238,6 +239,7 @@ export const api = {
         organization: string;
         license_key: string;
         status: string;
+        product_code?: string;
       };
       installation: {
         installation_id: string;
@@ -249,14 +251,17 @@ export const api = {
       user: { id: string; username: string; role: string; must_change_password?: boolean };
     }>("/api/auth/activate", {
       method: "POST",
-      body: JSON.stringify(body)}),
-  deviceStatus: (deviceId: string) =>
+      body: JSON.stringify({ product_code: "autoballoon", ...body })}),
+  deviceStatus: (deviceId: string, productCode = "autoballoon") =>
     req<{
       activated: boolean;
       license_key?: string;
       customer_id?: string;
       installation_id?: string;
-    }>(`/api/auth/device-status?device_id=${encodeURIComponent(deviceId)}`),
+      product_code?: string;
+    }>(
+      `/api/auth/device-status?device_id=${encodeURIComponent(deviceId)}&product_code=${encodeURIComponent(productCode)}`
+    ),
   changePassword: (current_password: string, new_password: string) =>
     req<{ ok: boolean }>("/api/auth/change-password", {
       method: "POST",
@@ -269,6 +274,7 @@ export const api = {
     org_id?: string;
     install_password?: string;
     require_device_approval?: boolean;
+    product_code?: string;
   }) =>
     req<Customer>("/api/admin/customers", { method: "POST", body: JSON.stringify(body) }),
   updateCustomer: (
@@ -278,6 +284,7 @@ export const api = {
       install_password: string;
       require_device_approval: boolean;
       org_id: string;
+      product_code: string;
     }>) =>
     req<Customer>(`/api/admin/customers/${customerId}`, {
       method: "PATCH",
@@ -588,6 +595,7 @@ export type Customer = {
   status: string;
   org_id?: string | null;
   tenant_id?: string | null;
+  product_code?: string;
   require_device_approval: boolean;
   has_install_password: boolean;
   approved_devices: number;

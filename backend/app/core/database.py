@@ -28,12 +28,9 @@ def _try_connect() -> bool:
     if "channel_binding=" not in url:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}channel_binding=disable"
-    # Neon's serverless compute auto-suspends when idle and can take several
-    # seconds to wake on the first connection after a cold start. A single
-    # short-timeout attempt was losing that race on fresh Cloud Run instances
-    # and silently falling back to the ephemeral, per-instance JSON store —
-    # making real accounts/customers look like they'd vanished. Retry with
-    # a generous per-attempt timeout before giving up.
+    # Retry briefly during an AWS Postgres restart or network hiccup before
+    # falling back to the per-instance JSON store. This avoids false startup
+    # failures for provisioned accounts and licenses.
     attempts = 3
     last_err: Exception | None = None
     for attempt in range(1, attempts + 1):
@@ -73,6 +70,8 @@ def ensure_commercial_schema() -> None:
         "ALTER TABLE customers ADD COLUMN IF NOT EXISTS org_id VARCHAR(64)",
         "ALTER TABLE customers ADD COLUMN IF NOT EXISTS install_password_hash TEXT",
         "ALTER TABLE customers ADD COLUMN IF NOT EXISTS require_device_approval BOOLEAN DEFAULT TRUE",
+        "ALTER TABLE customers ADD COLUMN IF NOT EXISTS product_code VARCHAR(64) DEFAULT 'autoballoon'",
+        "UPDATE customers SET product_code = 'autoballoon' WHERE product_code IS NULL OR product_code = ''",
         "ALTER TABLE installations ADD COLUMN IF NOT EXISTS hostname VARCHAR(255)",
         """
         CREATE TABLE IF NOT EXISTS approved_devices (

@@ -20,6 +20,8 @@ class Customer(Base):
     )
     install_password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     require_device_approval: Mapped[bool] = mapped_column(Boolean, default=True)
+    # autoballoon | costsheet — which desktop product this license activates
+    product_code: Mapped[str] = mapped_column(String(64), default="autoballoon")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

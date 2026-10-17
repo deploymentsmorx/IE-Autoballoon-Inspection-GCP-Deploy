@@ -13,7 +13,7 @@ Customer PC                    AWS (EC2 + Docker)
 └─────────────────┘           │ Web  :8080  (nginx Docker)   │
                               └───────────┬──────────────────┘
 Engineer browser ──► :8080                │
-                                          ├── Neon Postgres
+                                          ├── AWS Postgres
                                           └── S3 (PDF files)
 ```
 
@@ -22,7 +22,7 @@ Engineer browser ──► :8080                │
 | **API** | Docker on EC2 | Ballooning, auth, reports |
 | **Web UI** | Docker on EC2 | `http://IP:8080` or domain |
 | **EXE** | Customer Windows PC | Built separately, points to API URL |
-| **Neon** | Cloud | Same DB URL on server |
+| **AWS Postgres** | Cloud | Same DB URL on server |
 | **S3** | `autoballoon-storage-smorx-prod` | PDF storage — `https://autoballoon-storage-smorx-prod.s3.us-east-1.amazonaws.com/` — files under `autoballoon/{username}/{job_id}/` |
 
 **Do not install backend on customer PC.** Only the EXE goes to customers.
@@ -34,7 +34,7 @@ Engineer browser ──► :8080                │
 Never paste in Slack/email to developers:
 - AWS root password
 - `AWS_SECRET_ACCESS_KEY`
-- Neon password
+- AWS Postgres password
 - JWT secrets
 
 Use **IAM roles** on EC2 or a deployment `.env.production` file on the server only.
@@ -50,7 +50,7 @@ Use **IAM roles** on EC2 or a deployment `.env.production` file on the server on
 | **Elastic IP** | Fixed public IP for EXE/web |
 | **Security group** | Inbound: **22** (SSH), **9686** (API), **8080** (web). Prefer **443** with nginx + SSL later |
 | **S3** | `autoballoon-storage-smorx-prod` (us-east-1) — `https://autoballoon-storage-smorx-prod.s3.us-east-1.amazonaws.com/` |
-| **Neon** | Existing Postgres URL |
+| **AWS Postgres** | Existing Postgres URL |
 | **IAM role** | EC2 instance role with `s3:PutObject`, `s3:GetObject` on the bucket. Leave `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` blank so boto3 uses this role. |
 
 ---
@@ -68,7 +68,7 @@ git clone https://github.com/deploymentsmorx/Auto-Balloon-IE.git
 cd Auto-Balloon-IE
 
 cp deploy/.env.production.example .env.production
-nano .env.production   # fill Neon, JWT, S3, CORS, VITE_API_URL
+nano .env.production   # fill AWS Postgres, JWT, S3, CORS, VITE_API_URL
 ```
 
 **`.env.production` example (replace YOUR_EC2_IP):**
@@ -98,7 +98,7 @@ docker compose -f docker-compose.prod.yml ps
 
 ```bash
 curl http://localhost:9686/api/health
-# Expect: "db":"neon", "storage":"s3", "s3_url":"https://autoballoon-storage-smorx-prod.s3.us-east-1.amazonaws.com"
+# Expect: "db":"postgres", "storage":"s3", "s3_url":"https://autoballoon-storage-smorx-prod.s3.us-east-1.amazonaws.com"
 curl -I http://localhost:8080
 ```
 
@@ -135,7 +135,7 @@ EXE is **not** built inside Linux Docker. Build on Windows:
 
 ## Step 3 — Create users & licenses
 
-1. Login as super admin (web or local dev against same Neon).
+1. Login as super admin (web or local dev against same AWS Postgres).
 2. Admin → create customer, license, approved device, engineer login.
 3. Give customer: **EXE + license key + install password + login**.
 
@@ -170,8 +170,8 @@ Then update:
 
 ```
 [ ] EC2 running Ubuntu + Docker
-[ ] .env.production on server (Neon + S3 + JWT)
-[ ] docker compose up — health shows db:neon, storage:s3
+[ ] .env.production on server (AWS Postgres + S3 + JWT)
+[ ] docker compose up — health shows db:postgres, storage:s3
 [ ] Web opens at :8080
 [ ] EXE built with VITE_API_URL = public API
 [ ] Customer license created in Admin

@@ -32,6 +32,7 @@ export default function AdminPage() {
   const [installs, setInstalls] = useState<Installation[]>([]);
 
   const [companyName, setCompanyName] = useState("");
+  const [productCode, setProductCode] = useState<"autoballoon" | "costsheet">("costsheet");
   const [licenseKey, setLicenseKey] = useState("");
   const [installPwd, setInstallPwd] = useState("");
   const [deviceId, setDeviceId] = useState("");
@@ -72,6 +73,7 @@ export default function AdminPage() {
 
   const resetForm = () => {
     setCompanyName("");
+    setProductCode("costsheet");
     setLicenseKey("");
     setInstallPwd("");
     setDeviceId("");
@@ -98,6 +100,7 @@ export default function AdminPage() {
       org_id: org.id,
       install_password: installPwd,
       require_device_approval: requireApproval,
+      product_code: productCode,
     });
 
     if (deviceId.trim() && hostname.trim()) {
@@ -152,7 +155,7 @@ export default function AdminPage() {
             <h1>Super Admin</h1>
             <p className="muted">
               Fill one form to provision organization, license, device, and engineer. All records save to
-              Neon and appear in the lists below.
+              the database (AWS) and appear in the lists below.
             </p>
           </div>
           <button className="btn btn-outline btn-sm" onClick={logout}>
@@ -172,6 +175,17 @@ export default function AdminPage() {
               gap: 12,
             }}
           >
+            <div className="field">
+              <label>Product</label>
+              <select
+                style={inputStyle}
+                value={productCode}
+                onChange={(e) => setProductCode(e.target.value as "autoballoon" | "costsheet")}
+              >
+                <option value="autoballoon">AutoBalloon</option>
+                <option value="costsheet">Cost Sheet</option>
+              </select>
+            </div>
             <div className="field">
               <label>Company / organization name</label>
               <input
@@ -290,7 +304,7 @@ export default function AdminPage() {
               }
             }}
           >
-            {busy ? "Saving to Neon…" : "Create & save all"}
+            {busy ? "Saving…" : "Create & save all"}
           </button>
         </div>
 
@@ -335,6 +349,7 @@ export default function AdminPage() {
             <thead>
               <tr>
                 <th>Customer</th>
+                <th>Product</th>
                 <th>License</th>
                 <th>Tenant ID</th>
                 <th>Install pwd</th>
@@ -347,6 +362,7 @@ export default function AdminPage() {
               {customers.map((c) => (
                 <tr key={c.customer_id}>
                   <td>{c.organization}</td>
+                  <td>{c.product_code === "costsheet" ? "Cost Sheet" : "AutoBalloon"}</td>
                   <td>
                     <code>{c.license_key}</code>
                   </td>
@@ -359,7 +375,7 @@ export default function AdminPage() {
               ))}
               {!customers.length && (
                 <tr>
-                  <td colSpan={7} className="muted">
+                  <td colSpan={8} className="muted">
                     No customers yet
                   </td>
                 </tr>

@@ -120,7 +120,7 @@ def _save_meta(job_id: str, meta: dict, *, sync_files: bool = True) -> None:
     (jd / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     meta.setdefault("id", job_id)
     if sync_files:
-        # Mirror metadata → Neon; PDFs → S3 (or local) when configured
+        # Mirror metadata → Postgres; PDFs → S3 (or local) when configured
         try:
             from app import job_store
 
@@ -144,7 +144,7 @@ def _save_meta(job_id: str, meta: dict, *, sync_files: bool = True) -> None:
 
 
 def _save_meta_local(job_id: str, meta: dict) -> None:
-    """Write meta.json only — skip S3/Neon (used for large report PDF path)."""
+    """Write meta.json only — skip S3/Postgres (used for large report PDF path)."""
     jd = _job_dir(job_id)
     (jd / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 

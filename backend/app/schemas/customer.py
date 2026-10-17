@@ -10,6 +10,7 @@ class CustomerOut(BaseModel):
     status: str
     org_id: str | None = None
     tenant_id: str | None = None
+    product_code: str = "autoballoon"
     require_device_approval: bool = True
     has_install_password: bool = False
     approved_devices: int = 0
@@ -22,6 +23,7 @@ class CustomerCreate(BaseModel):
     org_id: str | None = None
     install_password: str = ""
     require_device_approval: bool = True
+    product_code: str = "autoballoon"
 
 
 class CustomerUpdate(BaseModel):
@@ -29,6 +31,7 @@ class CustomerUpdate(BaseModel):
     install_password: str | None = None
     require_device_approval: bool | None = None
     org_id: str | None = None
+    product_code: str | None = None
 
 
 class ApprovedDeviceOut(BaseModel):
