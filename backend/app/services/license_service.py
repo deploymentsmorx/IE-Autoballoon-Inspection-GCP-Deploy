@@ -89,10 +89,17 @@ def verify_device_for_login(customer_id: str, device_id: str, hostname: str) -> 
 
 
 def verify_user_product(user: dict, product_code: str, required_permission: str = "read") -> dict:
-    """Confirm an active engineer belongs to an active license for this product."""
+    """Confirm an active engineer license or Cost Sheet super-admin access."""
     product_code = _normalize_product(product_code)
     if user.get("role") == "super_admin":
-        raise HTTPException(status_code=403, detail="Customer account required")
+        if product_code != "costsheet":
+            raise HTTPException(status_code=403, detail="Super admin web access is only enabled for Cost Sheet")
+        return {
+            "customer_id": None,
+            "organization": "Cost Sheet",
+            "product_code": product_code,
+            "super_admin": True,
+        }
     if not user.get("active") or not (user.get("permissions") or {}).get(required_permission):
         raise HTTPException(status_code=403, detail="Account access is not active")
     customer_id = user.get("customer_id")
