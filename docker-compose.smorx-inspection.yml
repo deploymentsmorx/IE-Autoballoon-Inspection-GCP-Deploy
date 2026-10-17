@@ -3,11 +3,12 @@
 #
 # Required on the host (never committed):
 #   .env.smorx-inspection.production   app settings (POSTGRES_*, DATABASE_URL, JWT_SECRET, CORS_ORIGINS, VITE_API_URL, …)
-#                                      DATABASE_URL must point at the bundled db service, e.g.
-#                                      postgresql://<POSTGRES_USER>:<POSTGRES_PASSWORD>@db:5432/<POSTGRES_DB>
+#                                      Run deploy/use-costsheet-database.sh to point the admin API
+#                                      at the Cost Sheet Postgres container and its own schema.
 #   .secrets/aws/credentials           AWS shared-credentials file, mounted read-only
 #
 # Usage:
+#   bash deploy/use-costsheet-database.sh  # once, before first API rebuild
 #   docker compose -f docker-compose.smorx-inspection.yml \
 #     --env-file .env.smorx-inspection.production up -d --build
 
@@ -45,11 +46,11 @@ services:
       # boto3 reads keys from the mounted file when AWS_ACCESS_KEY_ID is blank
       AWS_SHARED_CREDENTIALS_FILE: /run/secrets/aws/credentials
       AWS_PROFILE: ${SMORX_INSPECTION_AWS_PROFILE:-default}
+    networks:
+      - default
+      - costsheet-db
     ports:
       - "${SMORX_INSPECTION_API_PORT:-19686}:9686"
-    depends_on:
-      db:
-        condition: service_healthy
     volumes:
       - smorx-inspection-data:/app/data
       - ./.secrets/aws/credentials:/run/secrets/aws/credentials:ro
@@ -81,3 +82,8 @@ volumes:
     name: smorx-inspection-data
   smorx-inspection-pgdata:
     name: smorx-inspection-pgdata
+
+networks:
+  costsheet-db:
+    external: true
+    name: smorx-costsheet_default
