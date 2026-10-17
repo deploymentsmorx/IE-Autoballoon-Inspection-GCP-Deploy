@@ -284,9 +284,26 @@ def delete_engineer(user_id: str) -> dict:
                 raise HTTPException(status_code=404, detail="User not found")
             if user.role == "super_admin":
                 raise HTTPException(status_code=400, detail="Cannot delete super admin")
+            customer_id = user.customer_id
+
+        if customer_id:
+            # A Cost Sheet customer is provisioned as one linked bundle. Removing
+            # its engineer removes the matching license, devices, activations,
+            # and any other engineer accounts attached to that customer.
+            from app.services.customer_service import delete_customer
+
+            result = delete_customer(customer_id)
+            return {**result, "deleted_customer": True}
+
+        with dbmod.SessionLocal() as db:
+            user = db.get(User, user_id)
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+            if user.role == "super_admin":
+                raise HTTPException(status_code=400, detail="Cannot delete super admin")
             db.delete(user)
             db.commit()
-        return {"ok": True}
+        return {"ok": True, "deleted_customer": False}
 
     db = local_store.load()
     user = next((u for u in db["users"] if u["id"] == user_id), None)

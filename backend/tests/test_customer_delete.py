@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.core import database as dbmod
 from app.core.database import Base
 from app.models import ApprovedDevice, Customer, Installation, Job, Organization, User
-from app.services import customer_service
+from app.services import auth_service, customer_service
 
 
 class DeleteCustomerTests(unittest.TestCase):
@@ -70,6 +70,18 @@ class DeleteCustomerTests(unittest.TestCase):
         self.add_org_and_customer()
         with self.sessions() as db:
             db.add(
+                User(
+                    id="USER-CUST-1-SECOND",
+                    username="second-engineer-cust-1",
+                    email="second-engineer-cust-1@example.com",
+                    full_name="Second Example Engineer",
+                    password_hash="hashed",
+                    role="engineer",
+                    org_id="ORG-1",
+                    customer_id="CUST-1",
+                )
+            )
+            db.add(
                 Customer(
                     customer_id="CUST-2",
                     organization="Example Co",
@@ -118,9 +130,10 @@ class DeleteCustomerTests(unittest.TestCase):
             )
             db.commit()
 
-        result = customer_service.delete_customer("CUST-1")
+        result = auth_service.delete_engineer("USER-CUST-1")
 
-        self.assertEqual(result["deleted_users"], 1)
+        self.assertTrue(result["deleted_customer"])
+        self.assertEqual(result["deleted_users"], 2)
         self.assertEqual(result["deleted_devices"], 1)
         self.assertEqual(result["deleted_installations"], 1)
         self.assertEqual(result["deleted_organizations"], 0)
@@ -129,6 +142,7 @@ class DeleteCustomerTests(unittest.TestCase):
             self.assertIsNone(db.get(Customer, "CUST-1"))
             self.assertIsNotNone(db.get(Customer, "CUST-2"))
             self.assertIsNone(db.get(User, "USER-CUST-1"))
+            self.assertIsNone(db.get(User, "USER-CUST-1-SECOND"))
             self.assertIsNotNone(db.get(User, "USER-CUST-2"))
             self.assertIsNone(db.get(ApprovedDevice, "DEVICE-1"))
             self.assertIsNone(db.get(Installation, "INSTALL-1"))

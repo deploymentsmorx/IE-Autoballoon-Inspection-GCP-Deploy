@@ -592,12 +592,12 @@ function AccessRow({ eng, onSaved }: { eng: Engineer; onSaved: () => Promise<voi
         <button
           className="btn btn-ghost btn-sm"
           onClick={async () => {
-            if (!confirm(`Remove user ${eng.username}?`)) return;
+            if (!confirm(`Delete ${eng.username} and the linked customer data? This removes the license, registered devices, activations, and all engineer accounts for that customer. The organization is removed only if no other customer or user still uses it.`)) return;
             await api.deleteEngineer(eng.id);
             await onSaved();
           }}
         >
-          Remove
+          {COSTSHEET_ADMIN_PORTAL ? "Delete customer" : "Remove"}
         </button>
       </td>
     </tr>
