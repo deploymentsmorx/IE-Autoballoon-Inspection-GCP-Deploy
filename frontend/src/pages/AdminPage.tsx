@@ -167,18 +167,7 @@ export default function AdminPage() {
         </div>
 
         {err && <div className="error mb">{err}</div>}
-        {msg && (
-          <div className="ok mb">
-            <div>{msg}</div>
-            <a
-              className="btn btn-primary btn-sm"
-              href={COSTSHEET_CLIENTS_URL}
-              style={{ display: "inline-flex", marginTop: 10 }}
-            >
-              Go to Cost Sheet Clients
-            </a>
-          </div>
-        )}
+        {msg && <div className="ok mb">{msg}</div>}
 
         <div className="section">
           <h2>Provision customer (one form)</h2>
@@ -309,6 +298,13 @@ export default function AdminPage() {
           >
             {busy ? "Saving…" : "Create & save all"}
           </button>
+          <a
+            className="btn btn-outline mt"
+            href={COSTSHEET_CLIENTS_URL}
+            style={{ display: "inline-flex", marginLeft: 10 }}
+          >
+            Go to Cost Sheet Web App
+          </a>
         </div>
 
         <div className="section">
