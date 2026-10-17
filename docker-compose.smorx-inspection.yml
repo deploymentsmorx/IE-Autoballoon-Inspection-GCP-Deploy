@@ -41,6 +41,7 @@ services:
       - .env.smorx-inspection.production
     environment:
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
+      COSTSHEET_ADMIN_PORTAL_ONLY: "true"
       # boto3 reads keys from the mounted file when AWS_ACCESS_KEY_ID is blank
       AWS_SHARED_CREDENTIALS_FILE: /run/secrets/aws/credentials
       AWS_PROFILE: ${SMORX_INSPECTION_AWS_PROFILE:-default}
@@ -64,7 +65,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: ${VITE_API_URL}
+        VITE_API_URL: ${VITE_API_URL:-http://100.51.165.76:19686}
+        VITE_ADMIN_PORTAL_ONLY: "true"
     image: smorx-inspection-web:latest
     container_name: smorx-inspection-web
     restart: unless-stopped

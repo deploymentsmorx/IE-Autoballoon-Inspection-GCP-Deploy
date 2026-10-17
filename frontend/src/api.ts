@@ -1,4 +1,5 @@
 import { isDesktopApp } from "./device";
+import { COSTSHEET_ADMIN_PORTAL } from "./constants/branding";
 
 const ENV_API = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") || "";
 const LOCAL_API_FALLBACKS = ["http://127.0.0.1:9686", "http://localhost:9686"];
@@ -251,8 +252,8 @@ export const api = {
       user: { id: string; username: string; role: string; must_change_password?: boolean };
     }>("/api/auth/activate", {
       method: "POST",
-      body: JSON.stringify({ product_code: "autoballoon", ...body })}),
-  deviceStatus: (deviceId: string, productCode = "autoballoon") =>
+      body: JSON.stringify({ product_code: COSTSHEET_ADMIN_PORTAL ? "costsheet" : "autoballoon", ...body })}),
+  deviceStatus: (deviceId: string, productCode = COSTSHEET_ADMIN_PORTAL ? "costsheet" : "autoballoon") =>
     req<{
       activated: boolean;
       license_key?: string;
@@ -276,7 +277,10 @@ export const api = {
     require_device_approval?: boolean;
     product_code?: string;
   }) =>
-    req<Customer>("/api/admin/customers", { method: "POST", body: JSON.stringify(body) }),
+    req<Customer>("/api/admin/customers", {
+      method: "POST",
+      body: JSON.stringify({ product_code: COSTSHEET_ADMIN_PORTAL ? "costsheet" : "autoballoon", ...body }),
+    }),
   updateCustomer: (
     customerId: string,
     body: Partial<{
@@ -636,6 +640,7 @@ export type Engineer = {
   username: string;
   status: string;
   org_id?: string;
+  customer_id?: string | null;
   active: boolean;
   permissions: { read?: boolean; write?: boolean; delete?: boolean };
 };

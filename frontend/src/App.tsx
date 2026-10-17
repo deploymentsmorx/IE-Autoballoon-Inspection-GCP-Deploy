@@ -1,4 +1,4 @@
-import { HashRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { HashRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { AuthProvider, useAuth } from "./auth";
 import LoginPage from "./pages/LoginPage";
@@ -7,6 +7,7 @@ import ChangePasswordPage from "./pages/ChangePasswordPage";
 import AdminPage from "./pages/AdminPage";
 import InspectionPage from "./pages/InspectionPage";
 import { isDesktopApp, isLicenseActivated, verifyActivationWithServer } from "./device";
+import { APP_TITLE, COSTSHEET_ADMIN_PORTAL } from "./constants/branding";
 
 const LAST_ROUTE_KEY = "smorx_last_route";
 
@@ -73,13 +74,18 @@ function Private({
     );
   }
   if (desktop && !isLicenseActivated()) {
-    return <Navigate to="/activate" replace />;
+    return <Navigate to={COSTSHEET_ADMIN_PORTAL ? "/access-denied" : "/activate"} replace />;
   }
   if (!user) return <Navigate to="/login" replace />;
+  if (COSTSHEET_ADMIN_PORTAL && user.role !== "super_admin") {
+    return <Navigate to="/access-denied" replace />;
+  }
   if (user.must_change_password) return <Navigate to="/change-password" replace />;
   // Packaged desktop EXE is for customer field use only — the admin console
   // is web-only, even if the activated account happens to carry that role.
-  if (adminOnly && desktop) return <Navigate to="/app" replace />;
+  if (adminOnly && desktop) {
+    return <Navigate to={COSTSHEET_ADMIN_PORTAL ? "/access-denied" : "/app"} replace />;
+  }
   return <>{children}</>;
 }
 
@@ -102,9 +108,10 @@ export default function App() {
           <AuthBoot>
             <RememberRoute />
             <Routes>
-              <Route path="/activate" element={<ActivatePage />} />
+              <Route path="/activate" element={COSTSHEET_ADMIN_PORTAL ? <Navigate to="/login" replace /> : <ActivatePage />} />
               <Route path="/login" element={<LoginPage />} />
               <Route path="/change-password" element={<ChangePasswordPage />} />
+              <Route path="/access-denied" element={<AccessDeniedPage />} />
               <Route
                 path="/admin"
                 element={
@@ -115,11 +122,11 @@ export default function App() {
               />
               <Route
                 path="/app"
-                element={
+                element={COSTSHEET_ADMIN_PORTAL ? <Navigate to="/" replace /> : (
                   <Private>
                     <InspectionPage />
                   </Private>
-                }
+                )}
               />
               <Route path="/" element={<HomeRedirect />} />
               <Route path="*" element={<Navigate to="/" replace />} />
@@ -128,6 +135,28 @@ export default function App() {
         </ActivationBoot>
       </HashRouter>
     </AuthProvider>
+  );
+}
+
+function AccessDeniedPage() {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
+  return (
+    <div className="page-center">
+      <div className="card">
+        <h1>{APP_TITLE}</h1>
+        <p className="muted">This portal is for Cost Sheet super administrators.</p>
+        <button
+          className="btn btn-primary"
+          onClick={() => {
+            logout();
+            navigate("/login", { replace: true });
+          }}
+        >
+          Sign out
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -156,7 +185,13 @@ function HomeRedirect() {
     return <Navigate to="/activate" replace />;
   }
   if (!user) return <Navigate to="/login" replace />;
+  if (COSTSHEET_ADMIN_PORTAL && user.role !== "super_admin") {
+    return <Navigate to="/access-denied" replace />;
+  }
   if (user.must_change_password) return <Navigate to="/change-password" replace />;
+  // The Cost Sheet deployment is a dedicated licensing portal. Never restore
+  // a stale /app route saved by the former combined application.
+  if (COSTSHEET_ADMIN_PORTAL) return <Navigate to="/admin" replace />;
   // The packaged desktop app is for customer field use only — never land on
   // the super-admin console there, regardless of role or remembered route.
   if (desktop) return <Navigate to="/app" replace />;

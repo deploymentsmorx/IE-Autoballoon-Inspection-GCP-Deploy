@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.api.dependencies import require_admin
+from app.core.config import settings
 from app.schemas import (
     ApprovedDeviceCreate,
     CustomerCreate,
@@ -15,7 +16,10 @@ router = APIRouter(prefix="/api/admin", tags=["customers"])
 
 @router.get("/customers")
 def list_customers(_: dict = Depends(require_admin)):
-    return customer_service.list_customers()
+    customers = customer_service.list_customers()
+    if settings.costsheet_admin_portal_only:
+        return [customer for customer in customers if customer.get("product_code") == "costsheet"]
+    return customers
 
 
 @router.post("/customers")
@@ -26,7 +30,7 @@ def create_customer(body: CustomerCreate, _: dict = Depends(require_admin)):
         org_id=body.org_id,
         install_password=body.install_password,
         require_device_approval=body.require_device_approval,
-        product_code=body.product_code,
+        product_code="costsheet" if settings.costsheet_admin_portal_only else body.product_code,
     )
 
 
@@ -38,7 +42,7 @@ def update_customer(customer_id: str, body: CustomerUpdate, _: dict = Depends(re
         install_password=body.install_password,
         require_device_approval=body.require_device_approval,
         org_id=body.org_id,
-        product_code=body.product_code,
+        product_code="costsheet" if settings.costsheet_admin_portal_only else body.product_code,
     )
 
 
@@ -59,4 +63,12 @@ def remove_device(customer_id: str, device_row_id: str, _: dict = Depends(requir
 
 @router.get("/installations")
 def list_installations(customer_id: str | None = None, _: dict = Depends(require_admin)):
-    return customer_service.list_installations(customer_id)
+    installations = customer_service.list_installations(customer_id)
+    if settings.costsheet_admin_portal_only:
+        costsheet_customer_ids = {
+            customer["customer_id"]
+            for customer in customer_service.list_customers()
+            if customer.get("product_code") == "costsheet"
+        }
+        return [installation for installation in installations if installation["customer_id"] in costsheet_customer_ids]
+    return installations

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { api } from "../api";
 import { useAuth } from "../auth";
+import { COSTSHEET_ADMIN_PORTAL } from "../constants/branding";
 
 export default function ChangePasswordPage() {
   const { user, ready, logout, refresh } = useAuth();
@@ -22,6 +23,9 @@ export default function ChangePasswordPage() {
   }
 
   if (!user) return <Navigate to="/login" replace />;
+  if (COSTSHEET_ADMIN_PORTAL && user.role !== "super_admin") {
+    return <Navigate to="/access-denied" replace />;
+  }
 
   if (!user.must_change_password) {
     return <Navigate to={user.role === "super_admin" ? "/admin" : "/app"} replace />;
@@ -42,7 +46,7 @@ export default function ChangePasswordPage() {
     try {
       await api.changePassword(current, next);
       await refresh();
-      nav(user.role === "super_admin" ? "/admin" : "/app", { replace: true });
+      nav(COSTSHEET_ADMIN_PORTAL || user.role === "super_admin" ? "/admin" : "/app", { replace: true });
     } catch (ex: unknown) {
       setErr(ex instanceof Error ? ex.message : "Could not change password");
     } finally {

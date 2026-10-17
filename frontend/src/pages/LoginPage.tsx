@@ -3,10 +3,10 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { api } from "../api";
 import { clearLicenseActivation, getDeviceInfo, isDesktopApp, isLicenseActivated } from "../device";
-import { APP_TITLE } from "../constants/branding";
+import { APP_TITLE, COSTSHEET_ADMIN_PORTAL } from "../constants/branding";
 
 export default function LoginPage() {
-  const { user, ready, login } = useAuth();
+  const { user, ready, login, logout } = useAuth();
   const nav = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -36,6 +36,9 @@ export default function LoginPage() {
   }
 
   if (user) {
+    if (COSTSHEET_ADMIN_PORTAL && user.role !== "super_admin") {
+      return <Navigate to="/access-denied" replace />;
+    }
     if (user.must_change_password) return <Navigate to="/change-password" replace />;
     return <Navigate to={user.role === "super_admin" ? "/admin" : "/app"} replace />;
   }
@@ -48,6 +51,11 @@ export default function LoginPage() {
       const device = desktop ? await getDeviceInfo() : undefined;
       await login(username, password, device);
       const me = await api.me();
+      if (COSTSHEET_ADMIN_PORTAL && me.role !== "super_admin") {
+        logout();
+        setErr("This portal is for Cost Sheet super administrators.");
+        return;
+      }
       if (me.must_change_password) {
         nav("/change-password");
         return;
@@ -80,7 +88,11 @@ export default function LoginPage() {
           <img src="/smorx-logo-full.png" alt="SmorX.ai" />
         </div>
         <h1>{APP_TITLE}</h1>
-        <p className="muted">Sign in with the email and password provided by your administrator.</p>
+        <p className="muted">
+          {COSTSHEET_ADMIN_PORTAL
+            ? "Sign in with your Cost Sheet super-admin account."
+            : "Sign in with the email and password provided by your administrator."}
+        </p>
         <form onSubmit={onSubmit}>
           <div className="field">
             <label>Email or username</label>
@@ -106,7 +118,9 @@ export default function LoginPage() {
           </button>
         </form>
         <p className="muted mt" style={{ fontSize: "0.8rem" }}>
-          Your super admin must grant access before you can use the app.
+          {COSTSHEET_ADMIN_PORTAL
+            ? "Authorized super-admin access only."
+            : "Your super admin must grant access before you can use the app."}
           {desktop && (
             <>
               {" "}

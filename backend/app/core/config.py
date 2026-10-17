@@ -20,6 +20,10 @@ STATIC = ROOT / "static"
 
 
 class Settings:
+    costsheet_admin_portal_only: bool = (
+        (os.getenv("COSTSHEET_ADMIN_PORTAL_ONLY") or "").strip().lower()
+        in {"1", "true", "yes"}
+    )
     database_url: str = (os.getenv("DATABASE_URL") or "").strip()
     jwt_secret: str = os.getenv("JWT_SECRET", "smorx-dev-secret-change-in-prod")
     jwt_algorithm: str = "HS256"

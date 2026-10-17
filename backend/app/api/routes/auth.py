@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.dependencies import current_user, require_admin
+from app.core.config import settings
 from app.core.security import create_token, verify_password
 from app.schemas import (
     AccessUpdate,
@@ -36,6 +37,8 @@ def login(body: LoginRequest):
     user = auth_service.find_user_by_login(body.username)
     if not user or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email/username or password")
+    if settings.costsheet_admin_portal_only and user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="Cost Sheet administrator access only")
     if not user.get("active") and user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Account inactive — ask super admin")
     # Desktop EXE sends device_id/hostname — must match the device this
@@ -59,9 +62,14 @@ def change_password(body: ChangePasswordRequest, user: dict = Depends(current_us
 
 
 @router.get("/api/auth/device-status")
-def device_status(device_id: str, product_code: str = "autoballoon"):
+def device_status(device_id: str, product_code: str | None = None):
     """Lets the desktop app re-confirm activation after a reinstall wipes its local flag."""
-    return license_service.device_status(device_id, product_code=product_code)
+    effective_product = (
+        "costsheet"
+        if settings.costsheet_admin_portal_only
+        else (product_code or "autoballoon")
+    )
+    return license_service.device_status(device_id, product_code=effective_product)
 
 
 @router.post("/api/auth/activate")
@@ -74,5 +82,9 @@ def activate_license(body: LicenseActivateRequest):
         device_id=body.device_id,
         hostname=body.hostname,
         install_password=body.install_password,
-        product_code=body.product_code,
+        product_code=(
+            "costsheet"
+            if settings.costsheet_admin_portal_only
+            else body.product_code
+        ),
     )

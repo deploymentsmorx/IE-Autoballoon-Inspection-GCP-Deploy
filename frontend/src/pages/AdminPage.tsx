@@ -9,6 +9,7 @@ import {
   type Org,
 } from "../api";
 import { clearJobSession, useAuth } from "../auth";
+import { COSTSHEET_ADMIN_PORTAL } from "../constants/branding";
 
 const inputStyle: React.CSSProperties = {
   borderRadius: 10,
@@ -144,17 +145,18 @@ export default function AdminPage() {
   }
   if (!user) return <Navigate to="/login" replace />;
   if (user.must_change_password) return <Navigate to="/change-password" replace />;
-  if (user.role !== "super_admin") return <Navigate to="/app" replace />;
+  if (user.role !== "super_admin") return <Navigate to={COSTSHEET_ADMIN_PORTAL ? "/access-denied" : "/app"} replace />;
 
   return (
     <div className="page-center" style={{ alignItems: "flex-start", paddingTop: 24, paddingBottom: 40 }}>
       <div className="card wide">
         <div className="row-between mb">
           <div>
-            <h1>Super Admin</h1>
+            <h1>{COSTSHEET_ADMIN_PORTAL ? "Cost Sheet Super Admin" : "Super Admin"}</h1>
             <p className="muted">
-              Fill one form to provision organization, license, device, and engineer. All records save to
-              the database (AWS) and appear in the lists below.
+              {COSTSHEET_ADMIN_PORTAL
+                ? "Provision Cost Sheet customers, licenses, approved devices, and engineer accounts. Records are saved in the AWS database."
+                : "Fill one form to provision organization, license, device, and engineer. All records save to the database (AWS) and appear in the lists below."}
             </p>
           </div>
           <button className="btn btn-outline btn-sm" onClick={logout}>
@@ -479,19 +481,21 @@ export default function AdminPage() {
           </table>
         </div>
 
-        <div className="mt">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            style={{ width: "auto" }}
-            onClick={() => {
-              clearJobSession();
-              nav("/app");
-            }}
-          >
-            ← Open ballooning app
-          </button>
-        </div>
+        {!COSTSHEET_ADMIN_PORTAL && (
+          <div className="mt">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              style={{ width: "auto" }}
+              onClick={() => {
+                clearJobSession();
+                nav("/app");
+              }}
+            >
+              ← Open ballooning app
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -110,6 +110,7 @@ def list_engineers() -> list[dict]:
                     "username": u.username,
                     "status": "Active" if u.active else "Inactive",
                     "org_id": u.org_id,
+                    "customer_id": getattr(u, "customer_id", None),
                     "permissions": {
                         "read": u.perm_read,
                         "write": u.perm_write,
@@ -129,6 +130,7 @@ def list_engineers() -> list[dict]:
             "username": u["username"],
             "status": "Active" if u.get("active") else "Inactive",
             "org_id": u.get("org_id"),
+            "customer_id": u.get("customer_id"),
             "permissions": u.get("permissions") or {},
             "active": u.get("active", False),
             "role": u.get("role"),
