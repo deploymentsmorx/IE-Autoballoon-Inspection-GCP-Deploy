@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 class LoginRequest(BaseModel):
     username: str
     password: str
+    # Cost Sheet browser login is scoped to the customer's active Cost Sheet license.
+    product_code: str | None = None
     # Sent by the desktop EXE only — web logins omit these and skip the check.
     device_id: str | None = None
     hostname: str | None = None

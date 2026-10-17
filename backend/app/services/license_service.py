@@ -88,6 +88,32 @@ def verify_device_for_login(customer_id: str, device_id: str, hostname: str) -> 
             )
 
 
+def verify_user_product(user: dict, product_code: str, required_permission: str = "read") -> dict:
+    """Confirm an active engineer belongs to an active license for this product."""
+    product_code = _normalize_product(product_code)
+    if user.get("role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Customer account required")
+    if not user.get("active") or not (user.get("permissions") or {}).get(required_permission):
+        raise HTTPException(status_code=403, detail="Account access is not active")
+    customer_id = user.get("customer_id")
+    if not customer_id:
+        raise HTTPException(status_code=403, detail="Account is not linked to a customer license")
+    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
+        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    with dbmod.SessionLocal() as db:
+        customer = db.get(Customer, customer_id)
+        if customer is None or customer.status != "Active":
+            raise HTTPException(status_code=403, detail="Customer license is inactive")
+        customer_product = getattr(customer, "product_code", None) or "autoballoon"
+        if customer_product != product_code:
+            raise HTTPException(status_code=403, detail="Account is not provisioned for Cost Sheet")
+        return {
+            "customer_id": customer.customer_id,
+            "organization": customer.organization,
+            "product_code": customer_product,
+        }
+
+
 def activate_installation(
     *,
     license_key: str,

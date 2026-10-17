@@ -18,8 +18,8 @@ from app.services import auth_service, license_service
 router = APIRouter(tags=["auth"])
 
 
-def _user_payload(user: dict) -> dict:
-    return {
+def _user_payload(user: dict, customer: dict | None = None) -> dict:
+    payload = {
         "id": user["id"],
         "username": user["username"],
         "email": user["email"],
@@ -30,6 +30,9 @@ def _user_payload(user: dict) -> dict:
         "must_change_password": bool(user.get("must_change_password")),
         "customer_id": user.get("customer_id"),
     }
+    if customer is not None:
+        payload["customer"] = customer
+    return payload
 
 
 @router.post("/api/auth/login")
@@ -37,7 +40,13 @@ def login(body: LoginRequest):
     user = auth_service.find_user_by_login(body.username)
     if not user or not verify_password(body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email/username or password")
-    if settings.costsheet_admin_portal_only and user.get("role") != "super_admin":
+    product_code = (body.product_code or "").strip().lower()
+    customer = None
+    if product_code:
+        if product_code != "costsheet":
+            raise HTTPException(status_code=403, detail="This login is not available for that product")
+        customer = license_service.verify_user_product(user, product_code)
+    if settings.costsheet_admin_portal_only and user.get("role") != "super_admin" and product_code != "costsheet":
         raise HTTPException(status_code=403, detail="Cost Sheet administrator access only")
     if not user.get("active") and user.get("role") != "super_admin":
         raise HTTPException(status_code=403, detail="Account inactive — ask super admin")
@@ -48,12 +57,19 @@ def login(body: LoginRequest):
             user["customer_id"], body.device_id, body.hostname or ""
         )
     token = create_token(user)
-    return {"token": token, "user": _user_payload(user)}
+    return {"token": token, "user": _user_payload(user, customer)}
 
 
 @router.get("/api/auth/me")
-def me(user: dict = Depends(current_user)):
-    return _user_payload(user)
+def me(
+    product_code: str | None = None,
+    required_permission: str = "read",
+    user: dict = Depends(current_user),
+):
+    customer = None
+    if product_code:
+        customer = license_service.verify_user_product(user, product_code, required_permission)
+    return _user_payload(user, customer)
 
 
 @router.post("/api/auth/change-password")
