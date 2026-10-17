@@ -293,6 +293,14 @@ export const api = {
     req<Customer>(`/api/admin/customers/${customerId}`, {
       method: "PATCH",
       body: JSON.stringify(body)}),
+  deleteCustomer: (customerId: string) =>
+    req<{
+      ok: boolean;
+      deleted_users: number;
+      deleted_devices: number;
+      deleted_installations: number;
+      deleted_organizations: number;
+    }>("/api/admin/customers/" + customerId, { method: "DELETE" }),
   listApprovedDevices: (customerId: string) =>
     req<ApprovedDevice[]>(`/api/admin/customers/${customerId}/devices`),
   addApprovedDevice: (customerId: string, device_id: string, hostname: string) =>

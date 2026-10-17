@@ -356,6 +356,7 @@ export default function AdminPage() {
                 <th>Devices</th>
                 <th>Active installs</th>
                 <th>Status</th>
+                <th>Delete</th>
               </tr>
             </thead>
             <tbody>
@@ -371,11 +372,40 @@ export default function AdminPage() {
                   <td>{c.approved_devices}</td>
                   <td>{c.active_installations}</td>
                   <td>{c.status}</td>
+                  <td>
+                    <button
+                      className="btn btn-outline btn-sm"
+                      style={{ width: "auto", color: "#b42318" }}
+                      onClick={async () => {
+                        const confirmed = window.confirm(
+                          "Delete " + c.organization + " and its Cost Sheet license, registered devices, activations, and linked engineer accounts? The organization is removed only when no other customer or user still uses it. Historical job records are retained without customer/device account links.",
+                        );
+                        if (!confirmed) return;
+                        setErr("");
+                        setMsg("");
+                        try {
+                          const result = await api.deleteCustomer(c.customer_id);
+                          await loadLists();
+                          setMsg(
+                            "Deleted " + c.organization + ": " + result.deleted_users +
+                              " engineer account(s), " + result.deleted_devices +
+                              " device(s), " + result.deleted_installations +
+                              " activation(s), and " + result.deleted_organizations +
+                              " organization(s).",
+                          );
+                        } catch (ex: unknown) {
+                          setErr(ex instanceof Error ? ex.message : "Customer deletion failed");
+                        }
+                      }}
+                    >
+                      Delete
+                    </button>
+                  </td>
                 </tr>
               ))}
               {!customers.length && (
                 <tr>
-                  <td colSpan={8} className="muted">
+                  <td colSpan={9} className="muted">
                     No customers yet
                   </td>
                 </tr>

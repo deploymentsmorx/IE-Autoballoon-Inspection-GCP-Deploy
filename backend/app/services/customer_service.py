@@ -6,11 +6,11 @@ import secrets
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 
 from app.core import database as dbmod
 from app.core.security import hash_password
-from app.models import ApprovedDevice, Customer, Installation, Organization
+from app.models import ApprovedDevice, Customer, Installation, Job, Organization, User
 
 VALID_PRODUCTS = frozenset({"autoballoon", "costsheet"})
 
@@ -136,6 +136,100 @@ def update_customer(customer_id: str, **fields) -> dict:
         db.commit()
         db.refresh(row)
         return _customer_out(db, row)
+
+
+def delete_customer(customer_id: str) -> dict:
+    """Delete a customer and its license/device/account records transactionally."""
+    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
+        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+
+    with dbmod.SessionLocal() as db:
+        customer = db.get(Customer, customer_id)
+        if customer is None:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        candidate_org_ids = {customer.org_id} if customer.org_id else set()
+        user_rows = db.scalars(
+            select(User).where(
+                User.customer_id == customer_id,
+                User.role != "super_admin",
+            )
+        ).all()
+        user_ids = [user.id for user in user_rows]
+        candidate_org_ids.update(user.org_id for user in user_rows if user.org_id)
+
+        installation_ids = list(
+            db.scalars(
+                select(Installation.installation_id).where(
+                    Installation.customer_id == customer_id
+                )
+            ).all()
+        )
+        device_count = int(
+            db.scalar(
+                select(func.count()).select_from(ApprovedDevice).where(
+                    ApprovedDevice.customer_id == customer_id
+                )
+            )
+            or 0
+        )
+
+        # Keep historical job rows, but unlink references that would otherwise
+        # block deletion of their customer, engineer, or activation records.
+        db.execute(
+            update(Job)
+            .where(Job.customer_id == customer_id)
+            .values(customer_id=None)
+        )
+        if user_ids:
+            db.execute(
+                update(Job)
+                .where(Job.user_id.in_(user_ids))
+                .values(user_id=None)
+            )
+        if installation_ids:
+            db.execute(
+                update(Job)
+                .where(Job.installation_id.in_(installation_ids))
+                .values(installation_id=None)
+            )
+
+        db.execute(
+            delete(User).where(
+                User.customer_id == customer_id,
+                User.role != "super_admin",
+            )
+        )
+        db.execute(delete(ApprovedDevice).where(ApprovedDevice.customer_id == customer_id))
+        db.execute(delete(Installation).where(Installation.customer_id == customer_id))
+        db.delete(customer)
+        db.flush()
+
+        deleted_orgs = 0
+        for org_id in candidate_org_ids:
+            org = db.get(Organization, org_id)
+            if org is None:
+                continue
+            has_customer = db.scalar(
+                select(Customer.customer_id)
+                .where(Customer.org_id == org_id)
+                .limit(1)
+            )
+            has_user = db.scalar(
+                select(User.id).where(User.org_id == org_id).limit(1)
+            )
+            if has_customer is None and has_user is None:
+                db.delete(org)
+                deleted_orgs += 1
+
+        db.commit()
+        return {
+            "ok": True,
+            "deleted_users": len(user_ids),
+            "deleted_devices": device_count,
+            "deleted_installations": len(installation_ids),
+            "deleted_organizations": deleted_orgs,
+        }
 
 
 def list_approved_devices(customer_id: str) -> list[dict]:

@@ -46,6 +46,11 @@ def update_customer(customer_id: str, body: CustomerUpdate, _: dict = Depends(re
     )
 
 
+@router.delete("/customers/{customer_id}")
+def remove_customer(customer_id: str, _: dict = Depends(require_admin)):
+    return customer_service.delete_customer(customer_id)
+
+
 @router.get("/customers/{customer_id}/devices")
 def list_devices(customer_id: str, _: dict = Depends(require_admin)):
     return customer_service.list_approved_devices(customer_id)
