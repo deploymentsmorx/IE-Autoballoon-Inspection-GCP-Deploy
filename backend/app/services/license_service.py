@@ -48,6 +48,17 @@ def device_status(device_id: str, product_code: str = "autoballoon") -> dict:
         cust_product = getattr(customer, "product_code", None) or "autoballoon"
         if cust_product != product_code:
             return {"activated": False}
+        if customer.require_device_approval:
+            approved = db.scalar(
+                select(ApprovedDevice).where(
+                    ApprovedDevice.customer_id == customer.customer_id,
+                    ApprovedDevice.device_id == device_id,
+                )
+            )
+            if approved is None or approved.status != "Active":
+                return {"activated": False}
+            if inst.hostname.strip().lower() != approved.hostname.strip().lower():
+                return {"activated": False}
         return {
             "activated": True,
             "license_key": customer.license_key,
@@ -166,6 +177,23 @@ def activate_installation(
                 detail=f"This license is for '{cust_product}', not '{product_code}'",
             )
 
+        if product_code == "costsheet":
+            if user.get("role") == "super_admin":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Super Admin accounts sign in through the Cost Sheet web app, not a customer EXE license.",
+                )
+            if user.get("customer_id") != customer.customer_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="This sign-in account is not linked to the license provided.",
+                )
+
+        if product_code == "costsheet" and not customer.install_password_hash:
+            raise HTTPException(
+                status_code=403,
+                detail="No install password is configured for this license. Contact the administrator.",
+            )
         if customer.install_password_hash:
             if not install_password or not verify_password(install_password, customer.install_password_hash):
                 raise HTTPException(status_code=403, detail="Invalid install password")

@@ -91,6 +91,7 @@ export default function AdminPage() {
     if (!companyName.trim()) throw new Error("Company / organization name is required");
     if (!fullName.trim() || !email.trim()) throw new Error("Engineer name and email are required");
     if (!email.includes("@")) throw new Error("Valid engineer email is required");
+    if (!installPwd.trim()) throw new Error("Install password is required for Cost Sheet EXE activation");
     if (requireApproval && (!deviceId.trim() || !hostname.trim())) {
       throw new Error("Device ID and Host name are required when device approval is enabled");
     }

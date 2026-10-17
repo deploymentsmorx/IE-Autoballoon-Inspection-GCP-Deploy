@@ -85,6 +85,8 @@ def create_customer(
         raise HTTPException(status_code=400, detail="organization required")
 
     product_code = _normalize_product(product_code)
+    if product_code == "costsheet" and not install_password.strip():
+        raise HTTPException(status_code=400, detail="Install password is required for Cost Sheet EXE activation")
     prefix = "CS" if product_code == "costsheet" else "AB"
     license_key = (license_key or "").strip() or f"{prefix}-{datetime.now().year}-{secrets.token_hex(2).upper()}"
     customer_id = f"CUST-{secrets.token_hex(3).upper()}"
