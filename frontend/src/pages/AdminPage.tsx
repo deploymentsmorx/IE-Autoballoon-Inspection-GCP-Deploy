@@ -20,6 +20,8 @@ const inputStyle: React.CSSProperties = {
   width: "100%",
 };
 
+const COSTSHEET_CLIENTS_URL = "http://100.51.165.76:28080/clients";
+
 type DeviceRow = ApprovedDevice & { customer_name: string };
 
 export default function AdminPage() {
@@ -165,7 +167,18 @@ export default function AdminPage() {
         </div>
 
         {err && <div className="error mb">{err}</div>}
-        {msg && <div className="ok mb">{msg}</div>}
+        {msg && (
+          <div className="ok mb">
+            <div>{msg}</div>
+            <a
+              className="btn btn-primary btn-sm"
+              href={COSTSHEET_CLIENTS_URL}
+              style={{ display: "inline-flex", marginTop: 10 }}
+            >
+              Go to Cost Sheet Clients
+            </a>
+          </div>
+        )}
 
         <div className="section">
           <h2>Provision customer (one form)</h2>
