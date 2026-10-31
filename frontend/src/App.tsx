@@ -6,7 +6,9 @@ import ActivatePage from "./pages/ActivatePage";
 import ChangePasswordPage from "./pages/ChangePasswordPage";
 import AdminPage from "./pages/AdminPage";
 import InspectionPage from "./pages/InspectionPage";
-import { isDesktopApp, isLicenseActivated, verifyActivationWithServer } from "./device";
+import TabletPage from "./pages/TabletPage";
+import { api } from "./api";
+import { getDeviceInfo, isDesktopApp, isLicenseActivated, isTabletClient, verifyActivationWithServer } from "./device";
 import { APP_TITLE, COSTSHEET_ADMIN_PORTAL } from "./constants/branding";
 
 const LAST_ROUTE_KEY = "smorx_last_route";
@@ -86,6 +88,38 @@ function Private({
   if (adminOnly && desktop) {
     return <Navigate to={COSTSHEET_ADMIN_PORTAL ? "/access-denied" : "/app"} replace />;
   }
+  return <TabletGate>{children}</TabletGate>;
+}
+
+function TabletGate({ children }: { children: React.ReactNode }) {
+  const tablet = isTabletClient();
+  const [state, setState] = useState<"skip" | "checking" | "ok" | "blocked">(tablet ? "checking" : "skip");
+
+  useEffect(() => {
+    if (!tablet) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await getDeviceInfo();
+        const status = await api.tabletStatus(info.device_id);
+        if (!cancelled) setState(status.status === "approved" ? "ok" : "blocked");
+      } catch {
+        if (!cancelled) setState("blocked");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tablet]);
+
+  if (state === "checking") {
+    return (
+      <div className="page-center">
+        <div className="muted">Checking tablet approval…</div>
+      </div>
+    );
+  }
+  if (state === "blocked") return <Navigate to="/tablet" replace />;
   return <>{children}</>;
 }
 
@@ -110,6 +144,7 @@ export default function App() {
             <Routes>
               <Route path="/activate" element={COSTSHEET_ADMIN_PORTAL ? <Navigate to="/login" replace /> : <ActivatePage />} />
               <Route path="/login" element={<LoginPage />} />
+              <Route path="/tablet" element={COSTSHEET_ADMIN_PORTAL ? <Navigate to="/login" replace /> : <TabletPage />} />
               <Route path="/change-password" element={<ChangePasswordPage />} />
               <Route path="/access-denied" element={<AccessDeniedPage />} />
               <Route

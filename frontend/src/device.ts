@@ -3,24 +3,48 @@ import { api } from "./api";
 const DEVICE_KEY = "smorx_device_id";
 const HOST_KEY = "smorx_hostname";
 const ACTIVATED_KEY = "smorx_license_activated";
+const TABLET_KEY = "smorx_client";
+
+export function isTabletClient(): boolean {
+  return localStorage.getItem(TABLET_KEY) === "tablet";
+}
+
+export function markTabletClient(): void {
+  localStorage.setItem(TABLET_KEY, "tablet");
+}
+
+export function clearTabletClient(): void {
+  localStorage.removeItem(TABLET_KEY);
+}
 
 export type DeviceInfo = {
   device_id: string;
   hostname: string;
 };
 
+function randomToken(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase();
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.toUpperCase();
+}
+
 function fallbackDeviceId(): DeviceInfo {
   let id = localStorage.getItem(DEVICE_KEY);
   if (!id) {
-    id = `DEV-WEB-${crypto.randomUUID().replace(/-/g, "").slice(0, 16).toUpperCase()}`;
+    id = `DEV-WEB-${randomToken()}`;
     localStorage.setItem(DEVICE_KEY, id);
   }
   const hostname = localStorage.getItem(HOST_KEY) || "browser";
   return { device_id: id, hostname };
 }
 
-/** Stable device id: Windows MachineGuid via Tauri, else browser UUID. */
+/** Stable device id: Windows MachineGuid via Tauri, else a saved browser id. */
 export async function getDeviceInfo(): Promise<DeviceInfo> {
+  const inDesktop =
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+  if (!inDesktop) return fallbackDeviceId();
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const info = await invoke<DeviceInfo>("get_device_info");

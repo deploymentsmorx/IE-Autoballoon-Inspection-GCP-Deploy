@@ -1783,6 +1783,8 @@ def save_report(
     user: dict = Depends(require_perm("write")),
 ):
     meta = _load_meta(job_id)
+    if not headers_only:
+        meta.pop("scan_suggestion", None)
     meta["part_number"] = body.part_number
     meta["part_name"] = body.part_name
     meta["revision"] = body.revision
@@ -1857,6 +1859,7 @@ def save_report_rows_chunk(
     if body.measure_columns is not None:
         meta["measure_columns"] = [c.model_dump() for c in body.measure_columns]
     if body.done:
+        meta.pop("scan_suggestion", None)
         cached = _job_dir(job_id) / "inspection_report.pdf"
         if cached.exists():
             try:

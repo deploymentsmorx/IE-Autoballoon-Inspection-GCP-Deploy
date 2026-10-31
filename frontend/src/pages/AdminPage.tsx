@@ -7,6 +7,7 @@ import {
   type Engineer,
   type Installation,
   type Org,
+  type TabletRecord,
 } from "../api";
 import { clearJobSession, useAuth } from "../auth";
 import { COSTSHEET_ADMIN_PORTAL } from "../constants/branding";
@@ -33,6 +34,7 @@ export default function AdminPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [engineers, setEngineers] = useState<Engineer[]>([]);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
+  const [tablets, setTablets] = useState<TabletRecord[]>([]);
   const [installs, setInstalls] = useState<Installation[]>([]);
 
   const [companyName, setCompanyName] = useState("");
@@ -52,16 +54,18 @@ export default function AdminPage() {
   const [busy, setBusy] = useState(false);
 
   const loadLists = async () => {
-    const [o, e, c, inst] = await Promise.all([
+    const [o, e, c, inst, tabs] = await Promise.all([
       api.listOrgs(),
       api.listEngineers(),
       api.listCustomers().catch(() => [] as Customer[]),
       api.listInstallations().catch(() => [] as Installation[]),
+      api.listTablets().catch(() => [] as TabletRecord[]),
     ]);
     setOrgs(o);
     setEngineers(e);
     setCustomers(c);
     setInstalls(inst);
+    setTablets(tabs);
 
     const devRows: DeviceRow[] = [];
     for (const cust of c) {
@@ -73,6 +77,14 @@ export default function AdminPage() {
 
   useEffect(() => {
     loadLists().catch((ex) => setErr(ex instanceof Error ? ex.message : "Load failed"));
+  }, []);
+
+  useEffect(() => {
+    if (COSTSHEET_ADMIN_PORTAL) return;
+    const timer = window.setInterval(() => {
+      api.listTablets().then(setTablets).catch(() => {});
+    }, 4000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const resetForm = () => {
@@ -432,6 +444,71 @@ export default function AdminPage() {
             </tbody>
           </table>
         </div>
+
+        {!COSTSHEET_ADMIN_PORTAL && (
+          <div className="section">
+            <h2>Factory tablets</h2>
+            <p className="muted">
+              Tablets check in from the inspection client. Approve a tablet before it can sign in. Reports they save are stored on this Auto Balloon PC.
+            </p>
+            <table className="table mt">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Device ID</th>
+                  <th>Status</th>
+                  <th>Last seen</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {tablets.map((t) => (
+                  <tr key={t.device_id}>
+                    <td>{t.label || t.hostname}</td>
+                    <td>
+                      <code>{t.device_id}</code>
+                    </td>
+                    <td>{t.status}</td>
+                    <td>{t.last_seen ? new Date(t.last_seen).toLocaleString() : "—"}</td>
+                    <td>
+                      {t.status !== "approved" && (
+                        <button
+                          className="btn btn-outline btn-sm"
+                          onClick={() => {
+                            void api.approveTablet(t.device_id).then(() => loadLists()).catch((ex: unknown) => {
+                              setErr(ex instanceof Error ? ex.message : "Could not approve tablet");
+                            });
+                          }}
+                        >
+                          Approve
+                        </button>
+                      )}
+                      {t.status !== "rejected" && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => {
+                            void api.rejectTablet(t.device_id).then(() => loadLists()).catch((ex: unknown) => {
+                              setErr(ex instanceof Error ? ex.message : "Could not reject tablet");
+                            });
+                          }}
+                        >
+                          Reject
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {!tablets.length && (
+                  <tr>
+                    <td colSpan={5} className="muted">
+                      No tablets have checked in yet
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         <div className="section">
           <h2>Registered devices</h2>

@@ -1548,8 +1548,9 @@ def _existing_item_balloon_circles(drawings: list) -> list[tuple[float, float, f
         # Skip blue/cyan markup (reviewer ink) — not item balloons
         col = d.get("color")
         if isinstance(col, (list, tuple)) and len(col) >= 3:
-            r, g, b = float(col[0]), float(col[1]), float(col[2])
-            if b > 0.45 and b > r + 0.15 and b > g + 0.05:
+            # Do not reuse `r` — that name is the drawing rect above.
+            cr, cg, cb = float(col[0]), float(col[1]), float(col[2])
+            if cb > 0.45 and cb > cr + 0.15 and cb > cg + 0.05:
                 continue
         items = d.get("items") or []
         ops = [it[0] for it in items]

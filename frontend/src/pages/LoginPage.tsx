@@ -1,8 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { api } from "../api";
-import { clearLicenseActivation, getDeviceInfo, isDesktopApp, isLicenseActivated } from "../device";
+import { clearLicenseActivation, getDeviceInfo, isDesktopApp, isLicenseActivated, isTabletClient } from "../device";
 import { APP_TITLE, COSTSHEET_ADMIN_PORTAL } from "../constants/branding";
 
 export default function LoginPage() {
@@ -48,8 +48,18 @@ export default function LoginPage() {
     setBusy(true);
     setErr("");
     try {
-      const device = desktop ? await getDeviceInfo() : undefined;
-      await login(username, password, device);
+      if (isTabletClient()) {
+        const info = await getDeviceInfo();
+        const status = await api.tabletStatus(info.device_id);
+        if (status.status !== "approved") {
+          nav("/tablet");
+          return;
+        }
+        await login(username, password, undefined, info.device_id);
+      } else {
+        const device = desktop ? await getDeviceInfo() : undefined;
+        await login(username, password, device);
+      }
       const me = await api.me();
       if (COSTSHEET_ADMIN_PORTAL && me.role !== "super_admin") {
         logout();
@@ -128,6 +138,14 @@ export default function LoginPage() {
               <a href="#/activate" style={{ color: "var(--blue)" }}>
                 Activate license
               </a>
+            </>
+          )}
+          {!COSTSHEET_ADMIN_PORTAL && (
+            <>
+              {" "}
+              <Link to="/tablet" style={{ color: "var(--blue)" }}>
+                Set up a factory tablet
+              </Link>
             </>
           )}
         </p>

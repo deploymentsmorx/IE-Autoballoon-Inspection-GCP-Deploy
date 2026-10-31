@@ -481,6 +481,38 @@ export default function InspectionPage() {
       setUploading(false);
     }
   };
+  const onScanReport = async (file: File | null) => {
+    if (!file) return;
+    setUploading(true);
+    setErr("");
+    setAuditMsg("Reading scanned inspection sheet…");
+    if (!jobId) {
+      clearJob();
+      setJob(null);
+      setJobId(null);
+      balloonsRef.current = [];
+      setMissing([]);
+      setSelected(null);
+      setMode("view");
+      setViewPage(0);
+      setPreviewRev(0);
+      undoStackRef.current = [];
+      setUndoCount(0);
+    }
+    try {
+      const res = await api.uploadScannedReport(file, jobId);
+      setJobSession(res.job_id);
+      setJobId(res.job_id);
+      await refresh(res.job_id, { bumpPreview: true });
+      setShowReport(true);
+      setAuditMsg(res.message || "Scan read. Review the report, then save it.");
+    } catch (e: any) {
+      setErr(e.message);
+      setAuditMsg("");
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const onBalloon = async () => {
     if (!jobId) return;
@@ -1128,6 +1160,18 @@ export default function InspectionPage() {
             }}
           />
           {uploading && <span className="muted" style={{ display: "block", marginTop: 6 }}>Uploading…</span>}
+        </div>
+        <div className="field" style={{ margin: 0, minWidth: 260 }}>
+          <label>Upload scanned inspection sheet</label>
+          <input
+            type="file"
+            accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,image/tiff,image/bmp,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp"
+            disabled={uploading || busy}
+            onChange={(e) => {
+              void onScanReport(e.target.files?.[0] || null);
+              e.target.value = "";
+            }}
+          />
         </div>
         <label
           className="balloon-no-field numbering-mode-field"
@@ -1940,41 +1984,47 @@ function ReportPanel({
     };
 
   useEffect(() => {
+    const suggestion = job.scan_suggestion;
     const nextRows =
-      (job.report_rows || []).length > 0
-        ? job.report_rows || []
-        : (job.balloons || []).map((b, i) => ({
-            sno: i + 1,
-            balloon: b.balloon,
-            reference: `P${b.page || 1}`,
-            nominal: b.text || "",
-            tol_low: "",
-            tol_high: "",
-            instrument: "",
-            unit: "mm",
-            instr_id: "",
-            measured: ["", ""],
-            remarks: "",
-          }));
+      suggestion?.rows?.length
+        ? suggestion.rows
+        : (job.report_rows || []).length > 0
+          ? job.report_rows || []
+          : (job.balloons || []).map((b, i) => ({
+              sno: i + 1,
+              balloon: b.balloon,
+              reference: `P${b.page || 1}`,
+              nominal: b.text || "",
+              tol_low: "",
+              tol_high: "",
+              instrument: "",
+              unit: "mm",
+              instr_id: "",
+              measured: ["", ""],
+              remarks: "",
+            }));
     setRows(nextRows);
-    setRowsDirty(false);
-    setReportDirty(false);
+    setRowsDirty(Boolean(suggestion?.rows?.length));
+    setReportDirty(Boolean(suggestion));
     setCols(job.measure_columns?.length ? job.measure_columns : defaultMeasureCols());
-    setPartNumber(job.part_number || "");
-    setPartName(job.part_name || "");
-    setRevision(job.revision || "");
-    setMaterial(job.material || "");
-    setMass(job.mass || "");
-    setFinish(job.finish || "");
-    setSerialNumber(job.serial_number || "");
-    setReportDate(job.report_date || nowReportDate());
-    setCompanyName(job.company_name || "");
-    setSupplierName(job.supplier_name || "");
-    setCustomerName(job.customer_name || "");
-    setAuthorizedSignatory(job.authorized_signatory || "");
+    const header = (key: "part_number" | "part_name" | "revision" | "material" | "mass" | "finish" | "serial_number" | "report_date" | "company_name" | "supplier_name" | "customer_name" | "authorized_signatory") =>
+      (suggestion && suggestion[key]) || job[key] || "";
+    setPartNumber(header("part_number"));
+    setPartName(header("part_name"));
+    setRevision(header("revision"));
+    setMaterial(header("material"));
+    setMass(header("mass"));
+    setFinish(header("finish"));
+    setSerialNumber(header("serial_number"));
+    setReportDate(header("report_date") || nowReportDate());
+    setCompanyName(header("company_name"));
+    setSupplierName(header("supplier_name"));
+    setCustomerName(header("customer_name"));
+    setAuthorizedSignatory(header("authorized_signatory"));
     setMasterFields(job.master_fields || {});
     setPage(0);
     setViewPageNum(defaultPage);
+    if (suggestion?.summary) setMsg(suggestion.summary);
   }, [job, defaultPage]);
 
   useEffect(() => {

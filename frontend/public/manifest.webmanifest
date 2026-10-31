@@ -1,0 +1,16 @@
+{
+  "name": "SmorX Inspection",
+  "short_name": "Inspection",
+  "start_url": "/#/tablet",
+  "display": "standalone",
+  "background_color": "#0e141c",
+  "theme_color": "#0e141c",
+  "icons": [
+    {
+      "src": "/smorx-icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

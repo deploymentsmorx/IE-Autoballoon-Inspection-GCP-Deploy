@@ -26,6 +26,7 @@ frontend/src-tauri/gen/
 
 # Runtime / job data
 backend/data/jobs/
+backend/data/tablets.json
 data/jobs/
 data/learned_feedback.json
 backend/data/learned_feedback.json

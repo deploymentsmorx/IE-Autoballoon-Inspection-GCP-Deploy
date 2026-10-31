@@ -8,7 +8,7 @@ export default defineConfig({
   clearScreen: false,
   envPrefix: ["VITE_", "TAURI_"],
   server: {
-    host: host || "127.0.0.1",
+    host: host || "0.0.0.0",
     port: 9835,
     strictPort: true,
     hmr: host

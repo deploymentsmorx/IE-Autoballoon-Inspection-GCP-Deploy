@@ -48,7 +48,14 @@ app.add_middleware(
     # Explicit origins required when Authorization credentials are sent
     # (allow_origins=["*"] + allow_credentials=True breaks browser/WebView fetch).
     allow_origins=_allowed_origins,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|tauri\.localhost)(:\d+)?",
+    allow_origin_regex=(
+        r"https?://("
+        r"localhost|127\.0\.0\.1|tauri\.localhost|"
+        r"192\.168\.\d{1,3}\.\d{1,3}|"
+        r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+        r"172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}"
+        r")(:\d+)?"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -65,6 +72,9 @@ if not ADMIN_PORTAL_ONLY:
     app.include_router(drawing_versions.router)
     from app.api.routes import app_settings
     app.include_router(app_settings.router)
+    from app.api.routes import scans, tablets
+    app.include_router(tablets.router)
+    app.include_router(scans.router)
 
 if STATIC.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")

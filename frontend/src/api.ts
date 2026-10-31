@@ -2,19 +2,42 @@ import { isDesktopApp } from "./device";
 import { COSTSHEET_ADMIN_PORTAL } from "./constants/branding";
 import type { EditableInstrumentRules } from "./constants/instrumentSuggest";
 
+const API_BASE_KEY = "smorx_api_base";
 const ENV_API = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") || "";
 const LOCAL_API_FALLBACKS = ["http://127.0.0.1:9686", "http://localhost:9686"];
 const isLocalApiUrl = (url: string) => /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(url);
+
+function storedApiBase(): string {
+  try {
+    return (localStorage.getItem(API_BASE_KEY) || "").replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
 /** In Vite dev, prefer same-origin `/api` (proxied to 9686) to avoid CORS / false "unreachable". */
 const API_CANDIDATES = Array.from(
   new Set(
     [
-      ...(import.meta.env.DEV ? [""] : []),
+      ...(storedApiBase() ? [storedApiBase()] : []),
+      ...(import.meta.env.DEV && !storedApiBase() ? [""] : []),
       ENV_API,
       // Packaged cloud EXE must not fall back to localhost — JWT secrets differ → "Invalid token".
       ...(import.meta.env.DEV || !ENV_API || isLocalApiUrl(ENV_API) ? LOCAL_API_FALLBACKS : []),
     ].filter((b) => b !== undefined && b !== null && (b === "" || Boolean(b)))));
 let API = API_CANDIDATES[0] || "http://127.0.0.1:9686";
+
+/** Point this client at the Auto Balloon PC (empty = same host / dev proxy). */
+export function setApiBaseOverride(url: string) {
+  const clean = url.trim().replace(/\/$/, "");
+  if (clean) localStorage.setItem(API_BASE_KEY, clean);
+  else localStorage.removeItem(API_BASE_KEY);
+  API = clean || (import.meta.env.DEV ? "" : LOCAL_API_FALLBACKS[0]);
+}
+
+export function getApiBaseOverride(): string {
+  return storedApiBase();
+}
 
 function authToken(): string {
   return localStorage.getItem("smorx_token") || "";
@@ -221,10 +244,40 @@ async function saveBlob(blob: Blob, filename: string): Promise<string> {
 
 export const api = {
   apiBase: API,
-  login: (username: string, password: string, device?: { device_id: string; hostname: string }) =>
+  login: (
+    username: string,
+    password: string,
+    device?: { device_id: string; hostname: string },
+    tabletId?: string,
+  ) =>
     req<{ token: string; user: User }>("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password, ...device })}),
+      body: JSON.stringify({ username, password, ...device, tablet_id: tabletId || undefined })}),
+  checkInTablet: (device_id: string, hostname: string, label = hostname) =>
+    req<TabletRecord>("/api/tablets/check-in", {
+      method: "POST",
+      body: JSON.stringify({ device_id, hostname, label }),
+    }),
+  tabletStatus: (deviceId: string) =>
+    req<TabletRecord>(`/api/tablets/status?device_id=${encodeURIComponent(deviceId)}`),
+  listTablets: () => req<TabletRecord[]>("/api/admin/tablets"),
+  approveTablet: (deviceId: string) =>
+    req<TabletRecord>(`/api/admin/tablets/${encodeURIComponent(deviceId)}/approve`, { method: "POST" }),
+  rejectTablet: (deviceId: string) =>
+    req<TabletRecord>(`/api/admin/tablets/${encodeURIComponent(deviceId)}/reject`, { method: "POST" }),
+  removeTablet: (deviceId: string) =>
+    req<{ ok: boolean }>(`/api/admin/tablets/${encodeURIComponent(deviceId)}`, { method: "DELETE" }),
+  uploadScannedReport: async (file: File, jobId?: string | null) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (jobId) fd.append("job_id", jobId);
+    return req<{
+      job_id: string;
+      created: boolean;
+      suggestion: ScanSuggestion;
+      message: string;
+    }>("/api/jobs/scan-report", { method: "POST", body: fd });
+  },
   activate: (body: {
     license_key: string;
     username: string;
@@ -807,6 +860,35 @@ export type Job = {
   balloon_numbering?: "continuous" | "per_page";
   status: string;
   page_count?: number;
+  scan_suggestion?: ScanSuggestion | null;
+};
+
+export type ScanSuggestion = {
+  part_number?: string;
+  part_name?: string;
+  revision?: string;
+  material?: string;
+  mass?: string;
+  finish?: string;
+  serial_number?: string;
+  report_date?: string;
+  company_name?: string;
+  supplier_name?: string;
+  customer_name?: string;
+  authorized_signatory?: string;
+  rows?: ReportRow[];
+  extractor?: string;
+  summary?: string;
+};
+
+export type TabletRecord = {
+  device_id: string;
+  hostname: string;
+  label?: string;
+  status: string;
+  first_seen?: string;
+  last_seen?: string;
+  approved_at?: string;
 };
 
 export function measureStatus(

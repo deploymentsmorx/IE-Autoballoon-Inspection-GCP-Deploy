@@ -58,6 +58,10 @@ def login(body: LoginRequest):
         license_service.verify_device_for_login(
             user["customer_id"], body.device_id, body.hostname or ""
         )
+    if body.tablet_id:
+        from app.services.tablet_registry import require_approved
+
+        require_approved(body.tablet_id)
     token = create_token(user)
     return {"token": token, "user": _user_payload(user, customer)}
 

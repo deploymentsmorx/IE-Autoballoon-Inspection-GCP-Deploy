@@ -11,6 +11,8 @@ class LoginRequest(BaseModel):
     # Sent by the desktop EXE only — web logins omit these and skip the check.
     device_id: str | None = None
     hostname: str | None = None
+    # Factory tablet client. Checked against the tablet registry, not the EXE license device.
+    tablet_id: str | None = None
 
 
 class OrgCreate(BaseModel):
