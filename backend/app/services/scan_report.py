@@ -63,7 +63,7 @@ def page_text(page: fitz.Page) -> str:
     if not tessdata:
         return text
     try:
-        tp = page.get_textpage_ocr(flags=0, language="eng", dpi=200, tessdata=tessdata)
+        tp = page.get_textpage_ocr(flags=0, language="eng", dpi=300, tessdata=tessdata)
         ocr = page.get_text("text", textpage=tp) or ""
     except Exception:
         return text
@@ -107,39 +107,85 @@ def page_jpegs(pdf_path: Path, max_pages: int = 3) -> list[str]:
 
 
 _NUM = re.compile(r"^[-+]?\d+(?:\.\d+)?$")
+_INSTR_RE = re.compile(
+    r"(?i)\b("
+    r"vernier(?:\s*caliper)?|dial\s*caliper|digital\s*caliper|caliper|"
+    r"micrometer|micrometre|inside\s*micrometer|depth\s*micrometer|"
+    r"height\s*gau?ge|bore\s*gau?ge|pin\s*gau?ge|thread\s*gau?ge|"
+    r"radius\s*gau?ge|feeler\s*gau?ge|plug\s*gau?ge|snap\s*gau?ge|"
+    r"air\s*gau?ge|dial\s*indicator|cmm|profile\s*projector|"
+    r"vision\s*system|surface\s*(?:roughness|tester)|steel\s*rule|"
+    r"bevel\s*protractor|comparator|go\s*/?\s*no[\s\-]*go"
+    r")\b(?:\s*[A-Za-z0-9/\-]{0,24})?"
+)
+_UNIT_RE = re.compile(r"(?i)^(mm|cm|m|inch|in|deg|°|micron|µm|um)$")
+_ID_RE = re.compile(r"(?i)^(?:[A-Z]{2,4}[-_/]\d{1,5}|[A-Z]{1,3}\d{3,6})$")
+
+
+def _instrument_from_texts(texts: list[str]) -> tuple[str, str, list[str]]:
+    blob = " ".join(texts)
+    match = _INSTR_RE.search(blob)
+    instrument = _clean(match.group(0), 40) if match else ""
+    leftover: list[str] = []
+    instr_id = ""
+    if match:
+        # Drop the matched instrument tokens from leftover text.
+        matched = set(re.findall(r"[A-Za-z0-9]+", match.group(0).lower()))
+        for t in texts:
+            tl = t.lower()
+            if any(part and part in matched for part in re.findall(r"[A-Za-z0-9]+", tl)):
+                continue
+            leftover.append(t)
+    else:
+        leftover = list(texts)
+    for t in leftover:
+        if _UNIT_RE.match(t):
+            continue
+        if _ID_RE.match(t) and not instr_id:
+            instr_id = t
+    remarks_bits = [t for t in leftover if t != instr_id and not _UNIT_RE.match(t)]
+    return instrument, instr_id, remarks_bits
+
+
+def _row_dict(
+    balloon: int,
+    *,
+    reference: str = "",
+    nominal: str = "",
+    tol_low: str = "",
+    tol_high: str = "",
+    instrument: str = "",
+    unit: str = "mm",
+    instr_id: str = "",
+    measured: list[str] | None = None,
+    remarks: str = "",
+    page: int = 1,
+) -> dict[str, Any]:
+    values = [_clean(v, 40) for v in (measured or []) if str(v or "").strip()]
+    return {
+        "sno": balloon,
+        "balloon": balloon,
+        "page": page,
+        "reference": _clean(reference, 40),
+        "nominal": _clean(nominal, 40),
+        "tol_low": _clean(tol_low, 20),
+        "tol_high": _clean(tol_high, 20),
+        "instrument": _clean(instrument, 40),
+        "unit": _clean(unit, 12) or "mm",
+        "instr_id": _clean(instr_id, 40),
+        "measured": values or [""],
+        "remarks": _clean(remarks, 80),
+    }
 
 
 def _parse_row_line(line: str) -> dict[str, Any] | None:
     raw = (line or "").strip()
     if not raw or len(raw) < 3:
         return None
-    if re.search(r"(?i)balloon|nominal|characteristic|item\s*no|part\s*number|inspection\s*report", raw) and not _NUM.match(
+    if re.search(r"(?i)balloon|nominal|characteristic|item\s*no|part\s*number|inspection\s*report|instrument", raw) and not _NUM.match(
         raw.split()[0]
     ):
         return None
-    match = _ROW_RE.match(raw)
-    if match:
-        balloon = int(match.group(1))
-        nominal = _clean(match.group(3), 40)
-        tol_low = _clean(match.group(4) or "", 20)
-        tol_high = _clean(match.group(5) or "", 20)
-        measured = _clean(match.group(6) or "", 40)
-        remarks = _clean(match.group(7) or "", 80)
-        reference = _clean(match.group(2), 40)
-        return {
-            "sno": balloon,
-            "balloon": balloon,
-            "page": 1,
-            "reference": reference,
-            "nominal": nominal,
-            "tol_low": tol_low,
-            "tol_high": tol_high,
-            "instrument": "",
-            "unit": "mm",
-            "instr_id": "",
-            "measured": [measured, ""],
-            "remarks": remarks,
-        }
     parts = [p.strip() for p in re.split(r"[\t|;,]+|\s{2,}", raw) if p.strip()]
     if len(parts) < 2:
         parts = raw.split()
@@ -148,41 +194,179 @@ def _parse_row_line(line: str) -> dict[str, Any] | None:
     balloon = int(parts[0])
     if balloon < 1 or balloon > 9999:
         return None
-    nums = [p for p in parts[1:] if _NUM.match(p)]
-    texts = [p for p in parts[1:] if not _NUM.match(p)]
-    if not nums:
+    # Printed report often repeats S.No then Balloon No.
+    rest = parts[1:]
+    if rest and re.fullmatch(r"\d{1,4}", rest[0]) and int(rest[0]) == balloon:
+        rest = rest[1:]
+    nums = [p for p in rest if _NUM.match(p)]
+    texts = [p for p in rest if not _NUM.match(p)]
+    instrument, instr_id, remark_bits = _instrument_from_texts(texts)
+    unit = next((t for t in texts if _UNIT_RE.match(t)), "mm")
+    reference_bits = [t for t in remark_bits if t not in {instrument, instr_id, unit}]
+    if not nums and not instrument and not instr_id:
         return None
-    nominal = nums[0]
-    extras = nums[1:]
-    if len(extras) == 0:
-        measured_vals: list[str] = []
-        tol_low = ""
-        tol_high = ""
-    elif len(extras) == 1:
-        measured_vals = [extras[0]]
-        tol_low = ""
-        tol_high = ""
+    extras = nums[:]
+    # Typical order: nominal, tol_low, tol_high, measured...
+    if len(extras) >= 3:
+        nominal, tol_low, tol_high = extras[0], extras[1], extras[2]
+        measured_vals = extras[3:]
     elif len(extras) == 2:
-        measured_vals = [extras[1]]
-        tol_low = ""
-        tol_high = ""
+        nominal, measured_vals, tol_low, tol_high = extras[0], [extras[1]], "", ""
+    elif len(extras) == 1:
+        nominal, measured_vals, tol_low, tol_high = extras[0], [], "", ""
     else:
-        tol_low, tol_high = extras[0], extras[1]
-        measured_vals = extras[2:]
-    return {
-        "sno": balloon,
-        "balloon": balloon,
-        "page": 1,
-        "reference": _clean(" ".join(texts), 40),
-        "nominal": _clean(nominal, 40),
-        "tol_low": _clean(tol_low, 20),
-        "tol_high": _clean(tol_high, 20),
-        "instrument": "",
-        "unit": "mm",
-        "instr_id": "",
-        "measured": [_clean(v, 40) for v in measured_vals] or [""],
-        "remarks": "",
-    }
+        nominal, measured_vals, tol_low, tol_high = "", [], "", ""
+    match = _ROW_RE.match(raw)
+    if match and not instrument:
+        nominal = _clean(match.group(3), 40) or nominal
+        tol_low = _clean(match.group(4) or "", 20) or tol_low
+        tol_high = _clean(match.group(5) or "", 20) or tol_high
+        extra_m = _clean(match.group(6) or "", 40)
+        if extra_m and extra_m not in measured_vals:
+            measured_vals = [extra_m, *measured_vals]
+        if not reference_bits:
+            reference_bits = [_clean(match.group(2), 40)]
+    return _row_dict(
+        balloon,
+        reference=" ".join(reference_bits),
+        nominal=nominal,
+        tol_low=tol_low,
+        tol_high=tol_high,
+        instrument=instrument,
+        unit=unit,
+        instr_id=instr_id,
+        measured=measured_vals,
+        remarks=_clean(match.group(7) if match else "", 80),
+    )
+
+
+def _page_words(page: fitz.Page) -> list[tuple[float, float, float, float, str]]:
+    words = list(page.get_text("words") or [])
+    if len(words) >= 8:
+        return [(float(w[0]), float(w[1]), float(w[2]), float(w[3]), str(w[4])) for w in words]
+    tessdata = _resolve_tessdata()
+    if not tessdata:
+        return [(float(w[0]), float(w[1]), float(w[2]), float(w[3]), str(w[4])) for w in words]
+    try:
+        tp = page.get_textpage_ocr(flags=0, language="eng", dpi=300, tessdata=tessdata)
+        ocr_words = list(page.get_text("words", textpage=tp) or [])
+    except Exception:
+        ocr_words = words
+    src = ocr_words if len(ocr_words) > len(words) else words
+    return [(float(w[0]), float(w[1]), float(w[2]), float(w[3]), str(w[4])) for w in src]
+
+
+def _cluster_word_rows(
+    words: list[tuple[float, float, float, float, str]], y_tol: float = 6.0
+) -> list[list[tuple[float, float, float, float, str]]]:
+    if not words:
+        return []
+    ordered = sorted(words, key=lambda w: (w[1], w[0]))
+    rows: list[list[tuple[float, float, float, float, str]]] = []
+    current: list[tuple[float, float, float, float, str]] = []
+    y0: float | None = None
+    for w in ordered:
+        if y0 is None or abs(w[1] - y0) <= y_tol:
+            current.append(w)
+            if y0 is None:
+                y0 = w[1]
+        else:
+            rows.append(sorted(current, key=lambda x: x[0]))
+            current = [w]
+            y0 = w[1]
+    if current:
+        rows.append(sorted(current, key=lambda x: x[0]))
+    return rows
+
+
+_HEADER_KEYS = (
+    ("balloon", ("balloon", "bno", "b.no", "ball")),
+    ("instrument", ("instrument", "instrment", "gage", "gauge")),
+    ("unit", ("unit",)),
+    ("instr_id", ("instr", "id", "inst.id")),
+    ("nominal", ("nominal", "spec")),
+    ("tol_low", ("tol", "low", "lower")),
+    ("tol_high", ("high", "upper")),
+    ("remarks", ("remark", "comment")),
+    ("sno", ("s.no", "sno", "sl")),
+)
+
+
+def _header_key(text: str) -> str | None:
+    t = re.sub(r"[^a-z0-9.]+", "", text.lower())
+    if re.fullmatch(r"m\d+", t) or t in {"actual", "measured", "reading"}:
+        return "measured"
+    for key, aliases in _HEADER_KEYS:
+        if any(a.replace(" ", "") in t for a in aliases):
+            return key
+    return None
+
+
+def parse_pdf_table(pdf_path: Path, max_pages: int = 20) -> list[dict[str, Any]]:
+    """Read balloon / instrument / measured cells from a printed inspection-report PDF."""
+    doc = fitz.open(pdf_path)
+    found: dict[int, dict[str, Any]] = {}
+    try:
+        for page_i, page in enumerate(doc):
+            if page_i >= max_pages:
+                break
+            rows = _cluster_word_rows(_page_words(page))
+            col_map: list[tuple[float, float, str]] = []
+            for line in rows:
+                texts = [w[4] for w in line]
+                joined = " ".join(texts).lower()
+                if "instrument" in joined and ("balloon" in joined or "nominal" in joined):
+                    col_map = []
+                    for w in line:
+                        key = _header_key(w[4])
+                        if key:
+                            col_map.append((w[0], w[2], key))
+                    continue
+                parsed = _parse_row_line(" ".join(texts))
+                if not parsed:
+                    continue
+                if col_map:
+                    buckets: dict[str, list[str]] = {}
+                    measured_bits: list[str] = []
+                    for w in line:
+                        cx = (w[0] + w[2]) / 2
+                        best = min(col_map, key=lambda c: min(abs(cx - c[0]), abs(cx - c[1]), abs(cx - (c[0] + c[1]) / 2)))
+                        key = best[2]
+                        if key == "measured":
+                            measured_bits.append(w[4])
+                        else:
+                            buckets.setdefault(key, []).append(w[4])
+                    inst = " ".join(buckets.get("instrument") or [])
+                    if inst:
+                        parsed["instrument"] = _clean(inst, 40)
+                    if buckets.get("instr_id"):
+                        parsed["instr_id"] = _clean(" ".join(buckets["instr_id"]), 40)
+                    if buckets.get("unit"):
+                        parsed["unit"] = _clean(" ".join(buckets["unit"]), 12) or parsed["unit"]
+                    if buckets.get("remarks"):
+                        parsed["remarks"] = _clean(" ".join(buckets["remarks"]), 80)
+                    extra_m = [t for t in measured_bits if _NUM.match(t)]
+                    if extra_m:
+                        parsed["measured"] = [_clean(v, 40) for v in extra_m]
+                    parsed["page"] = page_i + 1
+                balloon = int(parsed["balloon"])
+                prev = found.get(balloon)
+                if prev:
+                    if not prev.get("instrument") and parsed.get("instrument"):
+                        prev["instrument"] = parsed["instrument"]
+                    if not prev.get("instr_id") and parsed.get("instr_id"):
+                        prev["instr_id"] = parsed["instr_id"]
+                    prev_m = [v for v in (prev.get("measured") or []) if str(v).strip()]
+                    new_m = [v for v in (parsed.get("measured") or []) if str(v).strip()]
+                    if len(new_m) > len(prev_m):
+                        prev["measured"] = parsed["measured"]
+                    if not prev.get("remarks") and parsed.get("remarks"):
+                        prev["remarks"] = parsed["remarks"]
+                else:
+                    found[balloon] = parsed
+    finally:
+        doc.close()
+    return [found[k] for k in sorted(found)]
 
 
 def parse_inspection_text(text: str) -> dict[str, Any]:
@@ -437,9 +621,31 @@ def _openai_extract(text: str, images: list[str]) -> dict[str, Any]:
     return parsed
 
 
+def _merge_row_lists(primary: list[dict[str, Any]], extra: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_balloon: dict[int, dict[str, Any]] = {}
+    for row in extra + primary:
+        try:
+            balloon = int(row.get("balloon"))
+        except (TypeError, ValueError):
+            continue
+        prev = by_balloon.get(balloon)
+        if not prev:
+            by_balloon[balloon] = dict(row)
+            continue
+        for key in ("instrument", "instr_id", "unit", "nominal", "tol_low", "tol_high", "reference", "remarks"):
+            if not str(prev.get(key) or "").strip() and str(row.get(key) or "").strip():
+                prev[key] = row[key]
+        prev_m = [v for v in (prev.get("measured") or []) if str(v or "").strip()]
+        new_m = [v for v in (row.get("measured") or []) if str(v or "").strip()]
+        if len(new_m) > len(prev_m):
+            prev["measured"] = row.get("measured")
+    return [by_balloon[k] for k in sorted(by_balloon)]
+
+
 def extract_inspection_report(pdf_path: Path) -> dict[str, Any]:
     """Return a suggestion. Nothing here is the saved report until the operator saves it."""
     text, used_ocr = read_document_text(pdf_path)
+    table_rows = parse_pdf_table(pdf_path)
     openai_error = ""
     extractor = "text"
     raw: dict[str, Any] = {}
@@ -451,7 +657,11 @@ def extract_inspection_report(pdf_path: Path) -> dict[str, Any]:
             openai_error = str(exc)[:240]
     if extractor != "openai":
         raw = parse_inspection_text(text)
-        extractor = "ocr" if used_ocr else "text"
+        extractor = "table" if table_rows else ("ocr" if used_ocr else "text")
+    if table_rows:
+        raw["rows"] = _merge_row_lists(table_rows, raw.get("rows") if isinstance(raw.get("rows"), list) else [])
+        if extractor != "openai":
+            extractor = "table"
     suggestion = _normalize_suggestion(raw, text)
     filled_headers = sum(1 for key in _EMPTY_HEADER if suggestion.get(key))
     suggestion["extractor"] = extractor

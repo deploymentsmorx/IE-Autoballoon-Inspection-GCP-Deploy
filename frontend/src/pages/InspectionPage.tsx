@@ -2580,9 +2580,9 @@ function ReportPanel({
               className="btn btn-gold btn-sm"
               disabled={busy}
               onClick={() => scanFileRef.current?.click()}
-              title="Upload a filled inspection report as PDF or image. Values are read into the columns. Green = exact, yellow = in tolerance, red = out."
+              title="Upload a filled inspection report as PDF or image. Instrument and measured values are read into matching balloon rows."
             >
-              Upload
+              Upload filled report
             </button>
             <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void extractTitle()} title="Read title block / drawing labels into empty report fields">
               Extract from drawing
@@ -2615,6 +2615,30 @@ function ReportPanel({
           />
         )}
         {instrToast && <div className="instr-settings-toast">{instrToast}</div>}
+
+        <div
+          className="report-scan-bar mb"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            const file = e.dataTransfer.files?.[0];
+            if (file) void uploadFilledReport(file);
+          }}
+        >
+          <button
+            className="btn btn-gold"
+            disabled={busy}
+            onClick={() => scanFileRef.current?.click()}
+          >
+            {busy ? "Reading scan…" : "Attach filled PDF / image"}
+          </button>
+          <div>
+            <strong>Print the ballooned Report PDF, fill Instrument and other empty cells, scan it, then attach here.</strong>
+            <div className="muted">
+              Matching balloon rows are filled automatically. Green = exact, yellow = in tolerance, red = out. Review, then Save report data.
+            </div>
+          </div>
+        </div>
 
         <div className="report-download-bar mb">
           <div className="row report-download-scope">

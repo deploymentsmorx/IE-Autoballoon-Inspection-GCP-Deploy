@@ -76,6 +76,18 @@ input, select, button, textarea { font: inherit; }
 .btn-sm { padding: 6px 10px; font-size: 0.82rem; border-radius: 8px; }
 .btn-primary { background: linear-gradient(180deg, var(--blue), var(--blue-2)); }
 .btn-gold { background: linear-gradient(180deg, #dbb43a, #a88416); color: #1a1405; font-weight: 600; }
+.report-scan-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px dashed #dbb43a;
+  border-radius: 12px;
+  background: rgba(219, 180, 58, 0.10);
+}
+.report-scan-bar strong { color: #f3d36a; font-size: 0.95rem; }
+.report-scan-bar .muted { flex: 1; min-width: 220px; }
 .btn-ghost { background: transparent; border-color: var(--line); color: #cde; }
 .btn-outline { background: transparent; border-color: var(--blue); color: #9ec1ff; }
 
