@@ -25,6 +25,12 @@ if (TABLET_EXE) {
   } catch {
     /* localStorage may be unavailable during SSR */
   }
+} else {
+  try {
+    localStorage.removeItem(TABLET_KEY);
+  } catch {
+    /* leftover tablet flag from an old EXE must not trap the desktop installer */
+  }
 }
 
 export type DeviceInfo = {

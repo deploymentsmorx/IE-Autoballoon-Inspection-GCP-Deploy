@@ -39,8 +39,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $apk = Join-Path $Root "android\app\build\outputs\apk\debug\app-debug.apk"
 $outDir = Join-Path $Root "dist-desktop"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-$dest = Join-Path $outDir "InspectionTablet.apk"
+$dest = Join-Path $outDir "InspectionReport.apk"
 Copy-Item $apk $dest -Force
-Copy-Item $apk "C:\Users\AIMLE\Downloads\InspectionTablet.apk" -Force
+Copy-Item $apk "C:\Users\AIMLE\Downloads\InspectionReport.apk" -Force
+Remove-Item (Join-Path $outDir "InspectionTablet.apk") -Force -ErrorAction SilentlyContinue
+Remove-Item "C:\Users\AIMLE\Downloads\InspectionTablet.apk" -Force -ErrorAction SilentlyContinue
 Write-Host "Built: $dest"
-Write-Host "Copied: C:\Users\AIMLE\Downloads\InspectionTablet.apk"
+Write-Host "Copied: C:\Users\AIMLE\Downloads\InspectionReport.apk"

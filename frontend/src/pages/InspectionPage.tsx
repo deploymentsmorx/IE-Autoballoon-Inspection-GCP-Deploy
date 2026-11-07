@@ -1896,8 +1896,12 @@ function mergeScanIntoReport(
   }
 
   const byBalloon = new Map(suggestion.rows.map((r) => [Number(r.balloon), r]));
+  const bySno = new Map(suggestion.rows.map((r) => [Number(r.sno), r]));
   const rows = base.map((row) => {
-    const src = byBalloon.get(Number(row.balloon));
+    const src =
+      byBalloon.get(Number(row.balloon)) ||
+      bySno.get(Number(row.balloon)) ||
+      bySno.get(Number(row.sno));
     if (!src) return row;
     const incoming = Array.isArray(src.measured) ? src.measured : [src.measured || ""];
     const measured = [...(row.measured || [])];
@@ -2205,11 +2209,12 @@ function ReportPanel({
       setCustomerName((v) => header("customer_name", v));
       setAuthorizedSignatory((v) => header("authorized_signatory", v));
       markRowsDirty();
-      await onSaved();
-      const filled = merged.rows.filter((r) => (r.measured || []).some((v) => String(v || "").trim())).length;
+      const filledM = merged.rows.filter((r) => (r.measured || []).some((v) => String(v || "").trim())).length;
+      const filledI = merged.rows.filter((r) => String(r.instrument || "").trim()).length;
       setMsg(
-        res.message ||
-          `Filled ${filled} measured row(s) from the uploaded report. Green = exact, yellow = in tolerance, red = out. Review, then download.`,
+        suggestion?.rows?.length
+          ? `Filled ${filledI} instrument(s) and ${filledM} measured row(s). Review, then Save report data.`
+          : res.message || "No table rows could be read from this scan.",
       );
     } catch (e: any) {
       onError(e.message || "Could not read the uploaded inspection report");
@@ -2288,7 +2293,27 @@ function ReportPanel({
     return { ...r, instrument: s.instrument, instr_id, unit, instrument_auto: true };
   };
   const isManualInstrument = (r: ReportRow) =>
-    r.instrument_auto === false || manualInstrRef.current.has(r.balloon) || (!!r.instrument && r.instrument_auto !== true);
+    r.instrument_auto === false ||
+    manualInstrRef.current.has(r.balloon) ||
+    (!!r.instrument && r.instrument_auto !== true);
+
+  const chooseInstrument = (balloon: number, instrument: string, current: ReportRow) => {
+    manualInstrRef.current.add(balloon);
+    let next = instrument;
+    if (instrument === "__other__") {
+      next = (window.prompt("Instrument name", current.instrument || "") || "").trim();
+      if (!next) return;
+    }
+    const ids = instrumentIdOptions(next);
+    const instr_id = ids.includes(current.instr_id) ? current.instr_id : "";
+    const units = unitOptionsForInstrument(next);
+    const unit = next
+      ? units.includes(current.unit)
+        ? current.unit
+        : defaultUnitForInstrument(next)
+      : current.unit || "mm";
+    updateRowByBalloon(balloon, { instrument: next, instr_id, unit, instrument_auto: false });
+  };
 
   // Load shared rules once (falls back to built-in defaults).
   useEffect(() => {
@@ -2311,27 +2336,12 @@ function ReportPanel({
     manualInstrRef.current = new Set();
   }, [job.id]);
 
-  // A hand-made change in an Instrument dropdown marks that row manual. Capture phase runs
-  // before React's onChange, so the flag lands in the same update as the new instrument.
-  useEffect(() => {
-    const onManual = (e: Event) => {
-      const sel = e.target;
-      if (!(sel instanceof HTMLSelectElement)) return;
-      const tag = (sel.nextElementSibling as HTMLElement | null)?.dataset.instrSettingsBalloon;
-      if (!tag) return;
-      const balloon = Number(tag);
-      manualInstrRef.current.add(balloon);
-      setRows((rs) => rs.map((x) => (x.balloon === balloon ? { ...x, instrument_auto: false } : x)));
-    };
-    document.addEventListener("change", onManual, true);
-    return () => document.removeEventListener("change", onManual, true);
-  }, []);
-
-  // Select the suggested instrument in every empty, not-manual row.
+  // Put the rule-based instrument in the dropdown as the default. Never overwrite a
+  // hand-picked value, even if it is outside the Instrument Settings range.
   useEffect(() => {
     let filled = 0;
     const next = rows.map((r) => {
-      if (r.instrument || isManualInstrument(r)) return r;
+      if (isManualInstrument(r) || r.instrument) return r;
       const s = withSuggestedInstrument(r);
       if (!s) return r;
       filled += 1;
@@ -2340,7 +2350,7 @@ function ReportPanel({
     if (!filled) return;
     markRowsDirty();
     setRows(next);
-    setMsg(`Instrument auto-selected for ${filled} row(s) — change any by hand if needed, then Save report data.`);
+    setMsg(`Instrument auto-selected for ${filled} row(s). Change any from the dropdown — your choice is kept.`);
   }, [rows, rulesRev]);
 
   const autoInstrumentCounts = rows.reduce<Record<string, number>>((acc, r) => {
@@ -2839,21 +2849,12 @@ function ReportPanel({
                   <td>
                     <select
                       className="report-select"
+                      data-instr-balloon={r.balloon}
                       value={r.instrument || ""}
-                        onChange={(e) => {
-                          const instrument = e.target.value;
-                          const ids = instrumentIdOptions(instrument);
-                          const instr_id = ids.includes(r.instr_id) ? r.instr_id : "";
-                          const units = unitOptionsForInstrument(instrument);
-                          const unit = instrument
-                            ? units.includes(r.unit)
-                              ? r.unit
-                              : defaultUnitForInstrument(instrument)
-                            : r.unit || "mm";
-                          updateRowByBalloon(r.balloon, { instrument, instr_id, unit });
-                        }}
+                      title="Auto-filled from the range rules. Pick any other instrument to override."
+                      onChange={(e) => chooseInstrument(r.balloon, e.target.value, r)}
                     >
-                      <option value=""></option>
+                      <option value="">{r.instrument ? "" : "Choose instrument…"}</option>
                       {INSTRUMENT_OPTIONS.map((name) => (
                         <option key={name} value={name}>
                           {name}
@@ -2862,23 +2863,29 @@ function ReportPanel({
                       {r.instrument && !INSTRUMENT_OPTIONS.includes(r.instrument as (typeof INSTRUMENT_OPTIONS)[number]) && (
                         <option value={r.instrument}>{r.instrument}</option>
                       )}
+                      <option value="__other__">Other…</option>
                     </select>
                     {(() => {
                       const s = suggestionFor(r);
+                      const manual = isManualInstrument(r) && !!r.instrument;
+                      const hint = manual
+                        ? `Manual override${s.instrument && s.instrument !== r.instrument ? ` (rule default: ${s.instrument})` : ""}`
+                        : r.instrument
+                          ? s.summary || "Auto-selected from Instrument Settings"
+                          : "No auto match — pick any instrument";
                       return (
                         <div
-                          data-instr-settings-balloon={r.balloon}
-                          title={`${s.reason}${r.instrument_auto === true ? " · auto-selected" : r.instrument ? " · chosen manually" : ""}`}
+                          title={s.reason || hint}
                           style={{
                             fontSize: 11,
                             lineHeight: 1.3,
                             marginTop: 2,
                             maxWidth: 220,
-                            color: s.instrument ? "var(--muted)" : "#f97316",
-                            fontWeight: s.instrument ? 400 : 600,
+                            color: r.instrument ? "var(--muted)" : "#f97316",
+                            fontWeight: r.instrument ? 400 : 600,
                           }}
                         >
-                          {s.instrument ? s.summary : "No suitable instrument — review"}
+                          {hint}
                           {flashBalloons.has(r.balloon) && <span className="instr-settings-flash" />}
                           {versionRows.has(r.balloon) && <span className="dv-version-row" />}
                         </div>

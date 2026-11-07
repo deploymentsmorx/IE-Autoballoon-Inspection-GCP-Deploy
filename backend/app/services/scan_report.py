@@ -63,23 +63,31 @@ def page_text(page: fitz.Page) -> str:
     if not tessdata:
         return text
     try:
-        tp = page.get_textpage_ocr(flags=0, language="eng", dpi=300, tessdata=tessdata)
+        tp = page.get_textpage_ocr(flags=0, language="eng", dpi=150, tessdata=tessdata)
         ocr = page.get_text("text", textpage=tp) or ""
     except Exception:
         return text
     return ocr if len(ocr.strip()) > len(text.strip()) else text
 
 
-def read_document_text(pdf_path: Path, max_pages: int = 20) -> tuple[str, bool]:
+def read_document_text(pdf_path: Path, max_pages: int = 8) -> tuple[str, bool]:
+    import time
+
     doc = fitz.open(pdf_path)
     try:
         parts: list[str] = []
         used_ocr = False
+        started = time.monotonic()
         for i, page in enumerate(doc):
             if i >= max_pages:
                 break
             before = page.get_text("text") or ""
-            got = page_text(page)
+            if len(before.strip()) >= 40:
+                got = before
+            elif time.monotonic() - started > 25:
+                got = before
+            else:
+                got = page_text(page)
             if len(got.strip()) > len(before.strip()) + 10:
                 used_ocr = True
             if got.strip():
@@ -242,18 +250,7 @@ def _parse_row_line(line: str) -> dict[str, Any] | None:
 
 def _page_words(page: fitz.Page) -> list[tuple[float, float, float, float, str]]:
     words = list(page.get_text("words") or [])
-    if len(words) >= 8:
-        return [(float(w[0]), float(w[1]), float(w[2]), float(w[3]), str(w[4])) for w in words]
-    tessdata = _resolve_tessdata()
-    if not tessdata:
-        return [(float(w[0]), float(w[1]), float(w[2]), float(w[3]), str(w[4])) for w in words]
-    try:
-        tp = page.get_textpage_ocr(flags=0, language="eng", dpi=300, tessdata=tessdata)
-        ocr_words = list(page.get_text("words", textpage=tp) or [])
-    except Exception:
-        ocr_words = words
-    src = ocr_words if len(ocr_words) > len(words) else words
-    return [(float(w[0]), float(w[1]), float(w[2]), float(w[3]), str(w[4])) for w in src]
+    return [(float(w[0]), float(w[1]), float(w[2]), float(w[3]), str(w[4])) for w in words]
 
 
 def _cluster_word_rows(
@@ -302,7 +299,7 @@ def _header_key(text: str) -> str | None:
     return None
 
 
-def parse_pdf_table(pdf_path: Path, max_pages: int = 20) -> list[dict[str, Any]]:
+def parse_pdf_table(pdf_path: Path, max_pages: int = 8) -> list[dict[str, Any]]:
     """Read balloon / instrument / measured cells from a printed inspection-report PDF."""
     doc = fitz.open(pdf_path)
     found: dict[int, dict[str, Any]] = {}
@@ -645,43 +642,24 @@ def _merge_row_lists(primary: list[dict[str, Any]], extra: list[dict[str, Any]])
 def extract_inspection_report(pdf_path: Path) -> dict[str, Any]:
     """Return a suggestion. Nothing here is the saved report until the operator saves it."""
     text, used_ocr = read_document_text(pdf_path)
-    table_rows = parse_pdf_table(pdf_path)
-    openai_error = ""
-    extractor = "text"
-    raw: dict[str, Any] = {}
-    if (os.environ.get("OPENAI_API_KEY") or "").strip():
-        try:
-            raw = _openai_extract(text, page_jpegs(pdf_path))
-            extractor = "openai"
-        except Exception as exc:
-            openai_error = str(exc)[:240]
-    if extractor != "openai":
-        raw = parse_inspection_text(text)
-        extractor = "table" if table_rows else ("ocr" if used_ocr else "text")
-    if table_rows:
-        raw["rows"] = _merge_row_lists(table_rows, raw.get("rows") if isinstance(raw.get("rows"), list) else [])
-        if extractor != "openai":
+    raw: dict[str, Any] = parse_inspection_text(text)
+    line_rows = raw.get("rows") if isinstance(raw.get("rows"), list) else []
+    extractor = "ocr" if used_ocr else "text"
+    if len(line_rows) < 3:
+        table_rows = parse_pdf_table(pdf_path)
+        if table_rows:
+            raw["rows"] = _merge_row_lists(table_rows, line_rows)
             extractor = "table"
     suggestion = _normalize_suggestion(raw, text)
     filled_headers = sum(1 for key in _EMPTY_HEADER if suggestion.get(key))
     suggestion["extractor"] = extractor
-    suggestion["summary"] = (
-        f"Read {len(suggestion['rows'])} row(s) and {filled_headers} header field(s) "
-        f"using {extractor}."
-    )
-    if not suggestion["rows"] and filled_headers == 0:
-        if not (os.environ.get("OPENAI_API_KEY") or "").strip() and not _resolve_tessdata():
-            suggestion["summary"] = (
-                "No text could be read. Install Tesseract OCR or set OPENAI_API_KEY in backend/.env, then upload the scan again."
-            )
-        elif openai_error:
-            suggestion["summary"] = f"Could not structure this scan ({openai_error})."
-        else:
-            suggestion["summary"] = "The scan was read, but no inspection fields were recognized. Fill the report by hand."
-    elif openai_error and extractor != "openai":
-        suggestion["summary"] += f" OpenAI was skipped ({openai_error})."
-    suggestion["summary"] += (
-        " Measured cells colour: green = exact, yellow = in tolerance, red = out. "
-        "Review, then Save report data or download."
-    )
+    n = len(suggestion["rows"])
+    suggestion["summary"] = f"Read {n} row(s) and {filled_headers} header field(s) using {extractor}."
+    if n == 0:
+        suggestion["summary"] = (
+            "Could not read table rows from this file. Photograph the printed Report PDF table "
+            "(Instrument column visible), keep it sharp and upright, then attach again."
+        )
+    else:
+        suggestion["summary"] += " Review Instrument / measured cells, then Save report data."
     return suggestion
