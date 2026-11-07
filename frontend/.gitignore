@@ -9,3 +9,12 @@ dist-desktop/
 # Tauri / Rust
 src-tauri/target/
 src-tauri/gen/
+
+# Android / Capacitor
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/captures/
+android/.idea/
+android/*.iml

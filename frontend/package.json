@@ -9,15 +9,20 @@
     "preview": "vite preview --port 9835",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:tablet": "powershell -ExecutionPolicy Bypass -File ./scripts/build-tablet.ps1",
+    "apk:tablet": "powershell -ExecutionPolicy Bypass -File ./scripts/build-tablet-apk.ps1"
   },
   "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
     "@tauri-apps/api": "^2.11.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
     "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.0",

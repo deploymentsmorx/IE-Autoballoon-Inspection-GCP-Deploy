@@ -12,53 +12,104 @@ from .config import settings
 USE_POSTGRES = False
 engine = None
 SessionLocal = None
+LAST_PG_ERROR = ""
 
 
 class Base(DeclarativeBase):
     pass
 
 
-def _try_connect() -> bool:
-    global engine, SessionLocal, USE_POSTGRES
-    url = (settings.database_url or "").strip()
-    if not url:
-        return False
+def _normalize_pg_url(url: str) -> str:
+    url = (url or "").strip()
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg://", 1)
-    if "channel_binding=" not in url:
+    if url and "channel_binding=" not in url:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}channel_binding=disable"
+    return url
+
+
+def _candidate_urls() -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in (settings.license_database_url, settings.database_url):
+        url = _normalize_pg_url(raw)
+        if url and url not in seen:
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+def _try_connect(attempts: int = 3, connect_timeout: int = 20) -> bool:
+    global engine, SessionLocal, USE_POSTGRES, LAST_PG_ERROR
+    urls = _candidate_urls()
+    if not urls:
+        LAST_PG_ERROR = "DATABASE_URL is empty"
+        return False
     # Retry briefly during an AWS Postgres restart or network hiccup before
     # falling back to the per-instance JSON store. This avoids false startup
     # failures for provisioned accounts and licenses.
-    attempts = 3
     last_err: Exception | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            eng = create_engine(
-                url,
-                pool_pre_ping=True,
-                pool_size=3,
-                max_overflow=2,
-                pool_recycle=300,
-                connect_args={"connect_timeout": 20},
-            )
-            with eng.connect() as conn:
-                conn.exec_driver_sql("select 1")
-            engine = eng
-            SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-            USE_POSTGRES = True
-            return True
-        except Exception as e:
-            last_err = e
-            if attempt < attempts:
-                time.sleep(2 * attempt)
+    for url in urls:
+        for attempt in range(1, attempts + 1):
+            try:
+                eng = create_engine(
+                    url,
+                    pool_pre_ping=True,
+                    pool_size=3,
+                    max_overflow=2,
+                    pool_recycle=300,
+                    connect_args={"connect_timeout": connect_timeout},
+                )
+                with eng.connect() as conn:
+                    conn.exec_driver_sql("select 1")
+                engine = eng
+                SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+                USE_POSTGRES = True
+                LAST_PG_ERROR = ""
+                return True
+            except Exception as e:
+                last_err = e
+                LAST_PG_ERROR = f"{e.__class__.__name__}: {e}"
+                if attempt < attempts:
+                    time.sleep(2 * attempt)
 
-    print(f"[smorx] PostgreSQL unavailable ({last_err.__class__.__name__}); using local JSON store.")
+    print(f"[smorx] PostgreSQL unavailable ({last_err.__class__.__name__ if last_err else 'error'}); using local JSON store.")
     USE_POSTGRES = False
     engine = None
     SessionLocal = None
     return False
+
+
+def ensure_postgres() -> bool:
+    """Keep using Postgres if it is up; reconnect after a startup fallback or dropped pool."""
+    global USE_POSTGRES, engine, SessionLocal, LAST_PG_ERROR
+    if USE_POSTGRES and SessionLocal is not None:
+        if engine is None:
+            return True
+        try:
+            with engine.connect() as conn:
+                conn.exec_driver_sql("select 1")
+            return True
+        except Exception:
+            try:
+                engine.dispose()
+            except Exception:
+                pass
+            USE_POSTGRES = False
+            engine = None
+            SessionLocal = None
+    if not _try_connect(attempts=1, connect_timeout=3):
+        return False
+    try:
+        from app.core.security import hash_password
+
+        _create_schema_and_seed(hash_password)
+    except Exception as exc:
+        LAST_PG_ERROR = f"schema sync failed: {exc.__class__.__name__}: {exc}"
+        print(f"[smorx] PostgreSQL connected but schema sync failed ({exc.__class__.__name__}).")
+        return False
+    return True
 
 
 def ensure_commercial_schema() -> None:

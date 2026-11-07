@@ -75,7 +75,7 @@ function Private({
       </div>
     );
   }
-  if (desktop && !isLicenseActivated()) {
+  if (desktop && !isTabletClient() && !isLicenseActivated()) {
     return <Navigate to={COSTSHEET_ADMIN_PORTAL ? "/access-denied" : "/activate"} replace />;
   }
   if (!user) return <Navigate to="/login" replace />;
@@ -85,7 +85,7 @@ function Private({
   if (user.must_change_password) return <Navigate to="/change-password" replace />;
   // Packaged desktop EXE is for customer field use only — the admin console
   // is web-only, even if the activated account happens to carry that role.
-  if (adminOnly && desktop) {
+  if (adminOnly && (desktop || isTabletClient())) {
     return <Navigate to={COSTSHEET_ADMIN_PORTAL ? "/access-denied" : "/app"} replace />;
   }
   return <TabletGate>{children}</TabletGate>;
@@ -220,14 +220,16 @@ function HomeRedirect() {
     );
   }
 
-  if (desktop && !isLicenseActivated()) {
+  if (desktop && !isTabletClient() && !isLicenseActivated()) {
     return <Navigate to="/activate" replace />;
   }
+  if (isTabletClient() && !user) return <Navigate to="/tablet" replace />;
   if (!user) return <Navigate to="/login" replace />;
   if (COSTSHEET_ADMIN_PORTAL && user.role !== "super_admin") {
     return <Navigate to="/access-denied" replace />;
   }
   if (user.must_change_password) return <Navigate to="/change-password" replace />;
+  if (isTabletClient()) return <Navigate to="/app" replace />;
   // The Cost Sheet deployment is a dedicated licensing portal. Never restore
   // a stale /app route saved by the former combined application.
   if (COSTSHEET_ADMIN_PORTAL) return <Navigate to="/admin" replace />;

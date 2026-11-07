@@ -12,8 +12,30 @@ from app.core import database as dbmod
 from app.core.config import settings
 from app.core.security import create_token, verify_password
 from app.models import ApprovedDevice, Customer, Installation, User
-from app.services import auth_service
+from app.services import auth_service, license_json
 from app.services.customer_service import _normalize_product
+
+
+def _pg() -> bool:
+    try:
+        ok = dbmod.ensure_postgres()
+        if ok and dbmod.SessionLocal is not None:
+            return True
+    except HTTPException:
+        raise
+    except Exception:
+        if not settings.json_store_allowed:
+            raise HTTPException(
+                status_code=503,
+                detail="Cannot reach AWS PostgreSQL. Licenses were not saved to a local file.",
+            )
+        return False
+    if not settings.json_store_allowed:
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot reach AWS PostgreSQL. Licenses were not saved to a local file.",
+        )
+    return False
 
 
 def device_status(device_id: str, product_code: str = "autoballoon") -> dict:
@@ -22,8 +44,8 @@ def device_status(device_id: str, product_code: str = "autoballoon") -> dict:
     Windows MachineGuid (stable across app reinstalls/updates, unlike the
     browser localStorage flag the desktop app otherwise relies on).
     """
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        return {"activated": False}
+    if not _pg():
+        return license_json.device_status(device_id, product_code)
 
     device_id = device_id.strip().upper()
     if not device_id:
@@ -75,8 +97,9 @@ def verify_device_for_login(customer_id: str, device_id: str, hostname: str) -> 
     recorded when this customer's license was activated. Raises 403 on any
     mismatch or missing/inactive installation.
     """
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    if not _pg():
+        license_json.verify_device_for_login(customer_id, device_id, hostname)
+        return
 
     device_id = device_id.strip().upper()
     hostname = hostname.strip()
@@ -118,8 +141,8 @@ def verify_user_product(user: dict, product_code: str, required_permission: str 
     customer_id = user.get("customer_id")
     if not customer_id:
         raise HTTPException(status_code=403, detail="Account is not linked to a customer license")
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    if not _pg():
+        return license_json.verify_user_product(user, product_code, required_permission)
     with dbmod.SessionLocal() as db:
         customer = db.get(Customer, customer_id)
         if customer is None or customer.status != "Active":
@@ -148,8 +171,16 @@ def activate_installation(
     First-launch EXE flow:
       install password + license + user + admin-provided device_id/hostname → bind → JWT
     """
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    if not _pg():
+        return license_json.activate_installation(
+            license_key=license_key,
+            username=username,
+            password=password,
+            device_id=device_id,
+            hostname=hostname,
+            install_password=install_password,
+            product_code=product_code,
+        )
 
     product_code = _normalize_product(product_code)
     license_key = license_key.strip()

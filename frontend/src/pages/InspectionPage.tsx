@@ -10,6 +10,7 @@ import {
   type MissingDim,
   type ReportDownloadFilter,
   type ReportRow,
+  type ScanSuggestion,
 } from "../api";
 import type { DrawingVersionInfo } from "../api";
 import {
@@ -1848,6 +1849,107 @@ function nowReportDate() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function blankIf(dst: string | undefined, src: string | undefined): string {
+  return String(dst || "").trim() ? String(dst) : String(src || "").trim();
+}
+
+function balloonRowsFromJob(job: Job): ReportRow[] {
+  if ((job.report_rows || []).length) return job.report_rows || [];
+  return (job.balloons || []).map((b, i) => ({
+    sno: i + 1,
+    balloon: b.balloon,
+    page: b.page || 1,
+    reference: `P${b.page || 1}`,
+    nominal: b.text || "",
+    tol_low: "",
+    tol_high: "",
+    instrument: "",
+    unit: "mm",
+    instr_id: "",
+    measured: ["", ""],
+    remarks: "",
+  }));
+}
+
+/** Fill empty report cells from an uploaded PDF/image. Keep drawing balloons; do not replace the grid. */
+function mergeScanIntoReport(
+  currentRows: ReportRow[],
+  currentCols: MeasureCol[],
+  job: Job,
+  suggestion?: ScanSuggestion | null,
+): { rows: ReportRow[]; cols: MeasureCol[] } {
+  const base = currentRows.length ? currentRows : balloonRowsFromJob(job);
+  let cols = (currentCols.length ? currentCols : defaultMeasureCols()).map((c) => ({
+    ...c,
+    values: { ...(c.values || {}) },
+  }));
+  if (!suggestion?.rows?.length) return { rows: base, cols };
+
+  const needed = Math.max(
+    cols.length,
+    2,
+    ...suggestion.rows.map((r) => (Array.isArray(r.measured) ? r.measured.length : r.measured ? 1 : 0)),
+  );
+  while (cols.length < needed) {
+    const n = cols.length + 1;
+    cols.push({ id: `m${Date.now()}-${n}`, label: `M${n}`, values: {} });
+  }
+
+  const byBalloon = new Map(suggestion.rows.map((r) => [Number(r.balloon), r]));
+  const rows = base.map((row) => {
+    const src = byBalloon.get(Number(row.balloon));
+    if (!src) return row;
+    const incoming = Array.isArray(src.measured) ? src.measured : [src.measured || ""];
+    const measured = [...(row.measured || [])];
+    while (measured.length < cols.length) measured.push("");
+    incoming.forEach((val, i) => {
+      const v = String(val || "").trim();
+      if (!v) return;
+      if (!String(measured[i] || "").trim()) measured[i] = v;
+      const key = String(row.balloon);
+      if (cols[i] && !String(cols[i].values[key] || "").trim()) cols[i].values[key] = v;
+    });
+    return {
+      ...row,
+      page: row.page || src.page || 1,
+      reference: blankIf(row.reference, src.reference),
+      nominal: blankIf(row.nominal, src.nominal),
+      tol_low: blankIf(row.tol_low, src.tol_low),
+      tol_high: blankIf(row.tol_high, src.tol_high),
+      instrument: blankIf(row.instrument, src.instrument),
+      unit: blankIf(row.unit, src.unit) || "mm",
+      instr_id: blankIf(row.instr_id, src.instr_id),
+      remarks: blankIf(row.remarks, src.remarks),
+      measured,
+    };
+  });
+
+  const have = new Set(rows.map((r) => Number(r.balloon)));
+  for (const src of suggestion.rows) {
+    if (have.has(Number(src.balloon))) continue;
+    const incoming = Array.isArray(src.measured) ? src.measured : [src.measured || ""];
+    incoming.forEach((val, i) => {
+      const v = String(val || "").trim();
+      if (v && cols[i]) cols[i].values[String(src.balloon)] = v;
+    });
+    rows.push({
+      sno: rows.length + 1,
+      balloon: src.balloon,
+      page: src.page || 1,
+      reference: src.reference || "",
+      nominal: src.nominal || "",
+      tol_low: src.tol_low || "",
+      tol_high: src.tol_high || "",
+      instrument: src.instrument || "",
+      unit: src.unit || "mm",
+      instr_id: src.instr_id || "",
+      measured: incoming.length ? incoming : ["", ""],
+      remarks: src.remarks || "",
+    });
+  }
+  return { rows, cols };
+}
+
 type ReportViewScope = "all" | "page" | "area";
 
 function filterReportRowsForScope(
@@ -1983,30 +2085,20 @@ function ReportPanel({
       setter(v);
     };
 
+  const scanFileRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     const suggestion = job.scan_suggestion;
-    const nextRows =
-      suggestion?.rows?.length
-        ? suggestion.rows
-        : (job.report_rows || []).length > 0
-          ? job.report_rows || []
-          : (job.balloons || []).map((b, i) => ({
-              sno: i + 1,
-              balloon: b.balloon,
-              reference: `P${b.page || 1}`,
-              nominal: b.text || "",
-              tol_low: "",
-              tol_high: "",
-              instrument: "",
-              unit: "mm",
-              instr_id: "",
-              measured: ["", ""],
-              remarks: "",
-            }));
-    setRows(nextRows);
+    const merged = mergeScanIntoReport(
+      balloonRowsFromJob(job),
+      job.measure_columns?.length ? job.measure_columns : defaultMeasureCols(),
+      job,
+      suggestion,
+    );
+    setRows(merged.rows);
+    setCols(merged.cols);
     setRowsDirty(Boolean(suggestion?.rows?.length));
     setReportDirty(Boolean(suggestion));
-    setCols(job.measure_columns?.length ? job.measure_columns : defaultMeasureCols());
     const header = (key: "part_number" | "part_name" | "revision" | "material" | "mass" | "finish" | "serial_number" | "report_date" | "company_name" | "supplier_name" | "customer_name" | "authorized_signatory") =>
       (suggestion && suggestion[key]) || job[key] || "";
     setPartNumber(header("part_number"));
@@ -2081,6 +2173,49 @@ function ReportPanel({
     setRows((rs) => rs.map((r) => (r.instr_id === oldId.trim() ? { ...r, instr_id: newId.trim() } : r)));
     setIdRev((n) => n + 1);
     setMsg(`Instrument ID renamed to “${newId.trim()}”.`);
+  };
+
+  const uploadFilledReport = async (file: File | null) => {
+    if (!file) return;
+    setBusy(true);
+    setMsg("Reading uploaded inspection report (PDF / image)…");
+    try {
+      if (rowsDirty) {
+        await api.saveReportChunked(jobId, payload(), (m) => setMsg(m));
+      } else if (reportDirty) {
+        await api.saveReport(jobId, { ...payload(), rows: [] }, { localOnly: true, headersOnly: true });
+      }
+      const res = await api.uploadScannedReport(file, jobId);
+      const suggestion = res.suggestion;
+      const merged = mergeScanIntoReport(rows, cols, job, suggestion);
+      setRows(merged.rows);
+      setCols(merged.cols);
+      const header = (key: keyof ScanSuggestion, current: string) =>
+        blankIf(current, typeof suggestion?.[key] === "string" ? String(suggestion[key]) : "");
+      setPartNumber((v) => header("part_number", v));
+      setPartName((v) => header("part_name", v));
+      setRevision((v) => header("revision", v));
+      setMaterial((v) => header("material", v));
+      setMass((v) => header("mass", v));
+      setFinish((v) => header("finish", v));
+      setSerialNumber((v) => header("serial_number", v));
+      setReportDate((v) => header("report_date", v) || nowReportDate());
+      setCompanyName((v) => header("company_name", v));
+      setSupplierName((v) => header("supplier_name", v));
+      setCustomerName((v) => header("customer_name", v));
+      setAuthorizedSignatory((v) => header("authorized_signatory", v));
+      markRowsDirty();
+      await onSaved();
+      const filled = merged.rows.filter((r) => (r.measured || []).some((v) => String(v || "").trim())).length;
+      setMsg(
+        res.message ||
+          `Filled ${filled} measured row(s) from the uploaded report. Green = exact, yellow = in tolerance, red = out. Review, then download.`,
+      );
+    } catch (e: any) {
+      onError(e.message || "Could not read the uploaded inspection report");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const extractTitle = async () => {
@@ -2430,6 +2565,24 @@ function ReportPanel({
               title={rulesCanEdit ? "Edit instrument auto-selection rules" : "View instrument auto-selection rules"}
             >
               Instrument Settings
+            </button>
+            <input
+              ref={scanFileRef}
+              type="file"
+              accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,image/tiff,image/bmp,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                void uploadFilledReport(e.target.files?.[0] || null);
+                e.target.value = "";
+              }}
+            />
+            <button
+              className="btn btn-gold btn-sm"
+              disabled={busy}
+              onClick={() => scanFileRef.current?.click()}
+              title="Upload a filled inspection report as PDF or image. Values are read into the columns. Green = exact, yellow = in tolerance, red = out."
+            >
+              Upload
             </button>
             <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void extractTitle()} title="Read title block / drawing labels into empty report fields">
               Extract from drawing

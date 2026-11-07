@@ -203,6 +203,7 @@ def add_engineer(
         "password_hash": hash_password(password),
         "role": "engineer",
         "org_id": org_id,
+        "customer_id": customer_id,
         "active": False,
         "permissions": {"read": False, "write": False, "delete": False},
         "must_change_password": True,

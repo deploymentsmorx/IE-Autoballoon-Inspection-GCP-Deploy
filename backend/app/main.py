@@ -97,12 +97,16 @@ def _startup():
 @app.get("/api/health")
 def health():
     # Keep this instant — OCR/DB probes here made the EXE look "unreachable".
+    from app.core import database as dbmod
+
     payload: dict = {
         "ok": True,
         "service": "costsheet-admin" if ADMIN_PORTAL_ONLY else "smorx-autoballoon",
-        "db": DB_MODE,
+        "db": "postgres" if (dbmod.USE_POSTGRES and dbmod.SessionLocal is not None) else DB_MODE,
         "storage": storage_mode(),
     }
+    if getattr(dbmod, "LAST_PG_ERROR", ""):
+        payload["db_error"] = dbmod.LAST_PG_ERROR
     if s3_enabled():
         payload["s3_bucket"] = settings.aws_s3_bucket
         payload["s3_url"] = s3_base_url()

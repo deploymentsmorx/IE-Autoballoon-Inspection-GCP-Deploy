@@ -37,6 +37,7 @@ backend/data/learned_feedback.json
 Thumbs.db
 .idea/
 .vscode/
+.cursor/
 *.log
 
 # Temp renders / local checks

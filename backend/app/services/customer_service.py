@@ -9,10 +9,36 @@ from fastapi import HTTPException
 from sqlalchemy import delete, func, select, update
 
 from app.core import database as dbmod
+from app.core.config import settings
 from app.core.security import hash_password
 from app.models import ApprovedDevice, Customer, Installation, Job, Organization, User
+from app.services import license_json
 
 VALID_PRODUCTS = frozenset({"autoballoon", "costsheet"})
+
+
+def _pg() -> bool:
+    """Use AWS/Lightsail Postgres when DATABASE_URL is set. Do not save licenses to JSON."""
+    try:
+        ok = dbmod.ensure_postgres()
+        if ok and dbmod.SessionLocal is not None:
+            return True
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if not settings.json_store_allowed:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Cannot reach AWS PostgreSQL ({exc.__class__.__name__}). Licenses were not saved to a local file.",
+            ) from exc
+        print(f"[smorx] license postgres unavailable ({exc.__class__.__name__}); using JSON store.")
+        return False
+    if not settings.json_store_allowed:
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot reach AWS PostgreSQL. Licenses were not saved to a local file.",
+        )
+    return False
 
 
 def _now() -> datetime:
@@ -62,11 +88,15 @@ def _customer_out(db, c: Customer) -> dict:
 
 
 def list_customers() -> list[dict]:
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
-    with dbmod.SessionLocal() as db:
-        rows = db.scalars(select(Customer).order_by(Customer.organization)).all()
-        return [_customer_out(db, c) for c in rows]
+    if not _pg():
+        return license_json.list_customers()
+    try:
+        with dbmod.SessionLocal() as db:
+            rows = db.scalars(select(Customer).order_by(Customer.organization)).all()
+            return [_customer_out(db, c) for c in rows]
+    except Exception as exc:
+        print(f"[smorx] list_customers postgres failed ({exc.__class__.__name__}); using JSON store.")
+        return license_json.list_customers()
 
 
 def create_customer(
@@ -78,8 +108,15 @@ def create_customer(
     require_device_approval: bool = True,
     product_code: str = "autoballoon",
 ) -> dict:
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    if not _pg():
+        return license_json.create_customer(
+            organization=organization,
+            license_key=license_key,
+            org_id=org_id,
+            install_password=install_password,
+            require_device_approval=require_device_approval,
+            product_code=product_code,
+        )
     organization = organization.strip()
     if not organization:
         raise HTTPException(status_code=400, detail="organization required")
@@ -91,31 +128,44 @@ def create_customer(
     license_key = (license_key or "").strip() or f"{prefix}-{datetime.now().year}-{secrets.token_hex(2).upper()}"
     customer_id = f"CUST-{secrets.token_hex(3).upper()}"
 
-    with dbmod.SessionLocal() as db:
-        if db.scalar(select(Customer).where(Customer.license_key == license_key)):
-            raise HTTPException(status_code=400, detail="License key already exists")
-        if org_id and not db.get(Organization, org_id):
-            raise HTTPException(status_code=400, detail="Organization not found")
+    try:
+        with dbmod.SessionLocal() as db:
+            if db.scalar(select(Customer).where(Customer.license_key == license_key)):
+                raise HTTPException(status_code=400, detail="License key already exists")
+            if org_id and not db.get(Organization, org_id):
+                raise HTTPException(status_code=400, detail="Organization not found")
 
-        row = Customer(
-            customer_id=customer_id,
+            row = Customer(
+                customer_id=customer_id,
+                organization=organization,
+                license_key=license_key,
+                status="Active",
+                org_id=org_id,
+                install_password_hash=hash_password(install_password) if install_password else None,
+                require_device_approval=require_device_approval,
+                product_code=product_code,
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return _customer_out(db, row)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[smorx] create_customer postgres failed ({exc.__class__.__name__}); using JSON store.")
+        return license_json.create_customer(
             organization=organization,
             license_key=license_key,
-            status="Active",
             org_id=org_id,
-            install_password_hash=hash_password(install_password) if install_password else None,
+            install_password=install_password,
             require_device_approval=require_device_approval,
             product_code=product_code,
         )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return _customer_out(db, row)
 
 
 def update_customer(customer_id: str, **fields) -> dict:
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    if not _pg():
+        return license_json.update_customer(customer_id, **fields)
     with dbmod.SessionLocal() as db:
         row = db.get(Customer, customer_id)
         if row is None:
@@ -140,8 +190,8 @@ def update_customer(customer_id: str, **fields) -> dict:
 
 def delete_customer(customer_id: str) -> dict:
     """Delete a customer and its license/device/account records transactionally."""
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    if not _pg():
+        return license_json.delete_customer(customer_id)
 
     with dbmod.SessionLocal() as db:
         customer = db.get(Customer, customer_id)
@@ -233,8 +283,8 @@ def delete_customer(customer_id: str) -> dict:
 
 
 def list_approved_devices(customer_id: str) -> list[dict]:
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    if not _pg():
+        return license_json.list_approved_devices(customer_id)
     with dbmod.SessionLocal() as db:
         if not db.get(Customer, customer_id):
             raise HTTPException(status_code=404, detail="Customer not found")
@@ -257,8 +307,8 @@ def list_approved_devices(customer_id: str) -> list[dict]:
 
 
 def add_approved_device(customer_id: str, device_id: str, hostname: str) -> dict:
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    if not _pg():
+        return license_json.add_approved_device(customer_id, device_id, hostname)
     device_id = device_id.strip().upper()
     hostname = hostname.strip()
     if not device_id or not hostname:
@@ -270,41 +320,47 @@ def add_approved_device(customer_id: str, device_id: str, hostname: str) -> dict
             "customer's Activate screen, don't type a raw machine GUID",
         )
 
-    with dbmod.SessionLocal() as db:
-        if not db.get(Customer, customer_id):
-            raise HTTPException(status_code=404, detail="Customer not found")
-        existing = db.scalar(
-            select(ApprovedDevice).where(
-                ApprovedDevice.customer_id == customer_id,
-                ApprovedDevice.device_id == device_id,
+    try:
+        with dbmod.SessionLocal() as db:
+            if not db.get(Customer, customer_id):
+                raise HTTPException(status_code=404, detail="Customer not found")
+            existing = db.scalar(
+                select(ApprovedDevice).where(
+                    ApprovedDevice.customer_id == customer_id,
+                    ApprovedDevice.device_id == device_id,
+                )
             )
-        )
-        if existing:
-            raise HTTPException(status_code=400, detail="Device ID already registered for this customer")
+            if existing:
+                raise HTTPException(status_code=400, detail="Device ID already registered for this customer")
 
-        row = ApprovedDevice(
-            id=f"ADEV-{secrets.token_hex(4).upper()}",
-            customer_id=customer_id,
-            device_id=device_id,
-            hostname=hostname,
-            status="Pending",
-        )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return {
-            "id": row.id,
-            "customer_id": row.customer_id,
-            "device_id": row.device_id,
-            "hostname": row.hostname,
-            "status": row.status,
-            "activated_at": "",
-        }
+            row = ApprovedDevice(
+                id=f"ADEV-{secrets.token_hex(4).upper()}",
+                customer_id=customer_id,
+                device_id=device_id,
+                hostname=hostname,
+                status="Pending",
+            )
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return {
+                "id": row.id,
+                "customer_id": row.customer_id,
+                "device_id": row.device_id,
+                "hostname": row.hostname,
+                "status": row.status,
+                "activated_at": "",
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[smorx] add_approved_device postgres failed ({exc.__class__.__name__}); using JSON store.")
+        return license_json.add_approved_device(customer_id, device_id, hostname)
 
 
 def delete_approved_device(customer_id: str, device_id: str) -> dict:
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
+    if not _pg():
+        return license_json.delete_approved_device(customer_id, device_id)
     with dbmod.SessionLocal() as db:
         row = db.scalar(
             select(ApprovedDevice).where(
@@ -320,21 +376,25 @@ def delete_approved_device(customer_id: str, device_id: str) -> dict:
 
 
 def list_installations(customer_id: str | None = None) -> list[dict]:
-    if not dbmod.USE_POSTGRES or dbmod.SessionLocal is None:
-        raise HTTPException(status_code=503, detail="License server (database) unavailable")
-    with dbmod.SessionLocal() as db:
-        q = select(Installation).order_by(Installation.created_at.desc())
-        if customer_id:
-            q = q.where(Installation.customer_id == customer_id)
-        rows = db.scalars(q).all()
-        return [
-            {
-                "installation_id": r.installation_id,
-                "customer_id": r.customer_id,
-                "device_id": r.device_id,
-                "hostname": r.hostname or "",
-                "status": r.status,
-                "activated_at": r.activated_at.isoformat() if r.activated_at else "",
-            }
-            for r in rows
-        ]
+    if not _pg():
+        return license_json.list_installations(customer_id)
+    try:
+        with dbmod.SessionLocal() as db:
+            q = select(Installation).order_by(Installation.created_at.desc())
+            if customer_id:
+                q = q.where(Installation.customer_id == customer_id)
+            rows = db.scalars(q).all()
+            return [
+                {
+                    "installation_id": r.installation_id,
+                    "customer_id": r.customer_id,
+                    "device_id": r.device_id,
+                    "hostname": r.hostname or "",
+                    "status": r.status,
+                    "activated_at": r.activated_at.isoformat() if r.activated_at else "",
+                }
+                for r in rows
+            ]
+    except Exception as exc:
+        print(f"[smorx] list_installations postgres failed ({exc.__class__.__name__}); using JSON store.")
+        return license_json.list_installations(customer_id)

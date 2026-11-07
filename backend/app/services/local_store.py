@@ -16,11 +16,23 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _with_collections(db: dict) -> dict:
+    db.setdefault("users", [])
+    db.setdefault("organizations", [])
+    db.setdefault("customers", [])
+    db.setdefault("approved_devices", [])
+    db.setdefault("installations", [])
+    for user in db["users"]:
+        user.setdefault("customer_id", None)
+        user.setdefault("permissions", {"read": False, "write": False, "delete": False})
+    return db
+
+
 def ensure_seed(hash_password) -> dict:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     if DB_PATH.exists():
-        return json.loads(DB_PATH.read_text(encoding="utf-8"))
-    db = {
+        return _with_collections(json.loads(DB_PATH.read_text(encoding="utf-8")))
+    db = _with_collections({
         "users": [
             {
                 "id": "u-admin",
@@ -34,17 +46,25 @@ def ensure_seed(hash_password) -> dict:
                 "permissions": {"read": True, "write": True, "delete": True},
             }
         ],
-        "organizations": [],
         "updated_at": _now(),
-    }
+    })
     save(db)
     return db
 
 
 def load() -> dict:
-    return json.loads(DB_PATH.read_text(encoding="utf-8"))
+    if not DB_PATH.exists():
+        from app.core.security import hash_password
+
+        return ensure_seed(hash_password)
+    try:
+        return _with_collections(json.loads(DB_PATH.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        from app.core.security import hash_password
+
+        return ensure_seed(hash_password)
 
 
 def save(db: dict) -> None:
     db["updated_at"] = _now()
-    DB_PATH.write_text(json.dumps(db, indent=2), encoding="utf-8")
+    DB_PATH.write_text(json.dumps(_with_collections(db), indent=2), encoding="utf-8")

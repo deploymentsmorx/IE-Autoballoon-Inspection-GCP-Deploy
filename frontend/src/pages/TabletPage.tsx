@@ -1,19 +1,22 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, getApiBaseOverride, setApiBaseOverride, type TabletRecord } from "../api";
+import { TABLET_EXE } from "../constants/branding";
 import { clearTabletClient, getDeviceInfo, markTabletClient } from "../device";
-import { APP_TITLE } from "../constants/branding";
+
+const BAKED_API = ((import.meta.env.VITE_API_URL as string | undefined) || "").replace(/\/$/, "");
 
 export default function TabletPage() {
   const [deviceId, setDeviceId] = useState("");
   const [name, setName] = useState("");
-  const [server, setServer] = useState(getApiBaseOverride());
+  const [server, setServer] = useState(getApiBaseOverride() || BAKED_API);
   const [record, setRecord] = useState<TabletRecord | null>(null);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    if (TABLET_EXE) markTabletClient();
     getDeviceInfo().then((info) => {
       setDeviceId(info.device_id);
       setName((current) => current || localStorage.getItem("smorx_tablet_name") || info.hostname || "");
@@ -45,14 +48,18 @@ export default function TabletPage() {
       setErr("Enter a name for this tablet, such as Line 2.");
       return;
     }
+    const base = (server || BAKED_API).trim().replace(/\/$/, "");
+    if (!base) {
+      setErr("Enter the Auto Balloon server address, such as http://100.51.165.76:19686");
+      return;
+    }
     setBusy(true);
     setErr("");
     setMsg("");
     try {
-      setApiBaseOverride(server);
-      const healthUrl = `${getApiBaseOverride()}/api/health`;
-      const health = await fetch(healthUrl);
-      if (!health.ok) throw new Error(`Auto Balloon PC did not answer (${health.status})`);
+      setApiBaseOverride(base);
+      const health = await fetch(`${base}/api/health`);
+      if (!health.ok) throw new Error(`Auto Balloon server did not answer (${health.status})`);
       markTabletClient();
       localStorage.setItem("smorx_tablet_name", name.trim());
       localStorage.setItem("smorx_hostname", name.trim());
@@ -60,11 +67,11 @@ export default function TabletPage() {
       setRecord(row);
       setMsg(
         row.status === "approved"
-          ? "This tablet is approved. Sign in to fill inspection reports. Reports are saved on the Auto Balloon PC."
+          ? "This tablet is approved. Sign in to fill inspection reports."
           : "Checked in. Ask Super Admin to approve this tablet, then sign in.",
       );
     } catch (ex: unknown) {
-      setErr(ex instanceof Error ? ex.message : "Could not reach the Auto Balloon PC");
+      setErr(ex instanceof Error ? ex.message : "Could not reach the Auto Balloon server");
     } finally {
       setBusy(false);
     }
@@ -72,31 +79,56 @@ export default function TabletPage() {
 
   const approved = record?.status === "approved";
 
+  if (!TABLET_EXE) {
+    return (
+      <div className="page-center">
+        <div className="card" style={{ maxWidth: 560 }}>
+          <h1>Inspection tablet</h1>
+          <p className="muted">
+            Factory tablets use InspectionTablet.exe (Windows) or InspectionTablet.apk (Android / Samsung). Do not register a web browser as a tablet.
+          </p>
+          <p className="muted">
+            Install the tablet app, type a name such as Line 2, then Register. Super Admin approves it under Factory tablets.
+          </p>
+          <p className="muted mt">
+            <Link to="/login">Back to sign in</Link>
+            {" · "}
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                clearTabletClient();
+                window.location.hash = "#/login";
+              }}
+            >
+              This browser is the PC, not a tablet
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="page-center">
       <div className="card" style={{ maxWidth: 560 }}>
         <h1>Inspection tablet</h1>
         <p className="muted">
-          {APP_TITLE} stays on the Windows PC. This tablet connects to that PC, and every report you save is stored there.
-        </p>
-        <p className="muted">
-          On the tablet, open this page in Chrome and choose Add to Home screen. Android cannot install the Windows .exe.
-          A Windows tablet uses this same page.
+          This tablet app connects to the Auto Balloon server. Every report you save is stored there.
         </p>
 
         {err && <div className="error mb">{err}</div>}
         {msg && <div className="ok mb">{msg}</div>}
 
         <div className="field">
-          <label>Auto Balloon PC address</label>
+          <label>Auto Balloon server address</label>
           <input
             value={server}
-            placeholder="Leave blank when this page was opened from that PC"
+            placeholder="http://100.51.165.76:19686"
             onChange={(e) => setServer(e.target.value)}
             autoCapitalize="off"
             autoCorrect="off"
           />
-          <span className="muted">Example: http://192.168.1.20:9686</span>
         </div>
         <div className="field">
           <label>Tablet name — type this</label>
@@ -125,21 +157,6 @@ export default function TabletPage() {
             </Link>
           </p>
         )}
-
-        <p className="muted mt">
-          <Link to="/login">Back to sign in</Link>
-          {" · "}
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => {
-              clearTabletClient();
-              window.location.hash = "#/login";
-            }}
-          >
-            This browser is the PC, not a tablet
-          </button>
-        </p>
       </div>
     </div>
   );

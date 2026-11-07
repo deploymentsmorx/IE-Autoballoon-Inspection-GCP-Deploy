@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.api.dependencies import require_perm
-from app.services.scan_report import extract_inspection_report
+from app.services.scan_report import apply_suggestion_to_meta, extract_inspection_report
 
 router = APIRouter(prefix="/api/jobs", tags=["scans"])
 
@@ -129,6 +129,7 @@ async def scan_report(
 
     meta["scan_suggestion"] = suggestion
     meta["scan_file"] = name
+    apply_suggestion_to_meta(meta, suggestion)
     _ensure_report_date(meta)
     _ensure_measure_columns(meta)
     _save_meta(job_id, meta)

@@ -4,7 +4,9 @@
 # Required on the host (never committed):
 #   .env.smorx-inspection.production   app settings (POSTGRES_*, DATABASE_URL, JWT_SECRET, CORS_ORIGINS, VITE_API_URL, …)
 #                                      CORS_ORIGINS must include the Inspection web origin on port 8464.
-#                                      Inspection uses only its own local Postgres service.
+#                                      DATABASE_URL must be the existing Lightsail Postgres used by
+#                                      Cost Sheet / Project Plan / DMS. Local smorx-inspection-db is
+#                                      only a fallback when DATABASE_URL is empty.
 #   .secrets/aws/credentials           AWS shared-credentials file, mounted read-only
 #
 # Usage:
@@ -42,7 +44,7 @@ services:
     environment:
       UVICORN_WORKERS: ${UVICORN_WORKERS:-2}
       COSTSHEET_ADMIN_PORTAL_ONLY: "false"
-      INSPECTION_USE_LOCAL_POSTGRES: "true"
+      INSPECTION_USE_LOCAL_POSTGRES: "${INSPECTION_USE_LOCAL_POSTGRES:-false}"
       # boto3 reads keys from the mounted file when AWS_ACCESS_KEY_ID is blank
       AWS_SHARED_CREDENTIALS_FILE: /run/secrets/aws/credentials
       AWS_PROFILE: ${SMORX_INSPECTION_AWS_PROFILE:-default}

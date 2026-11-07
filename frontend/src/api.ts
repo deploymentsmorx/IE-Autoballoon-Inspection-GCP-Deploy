@@ -322,6 +322,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ current_password, new_password })}),
   me: () => req<User>("/api/auth/me"),
+  health: () => req<{ ok: boolean; db?: string; service?: string; db_error?: string }>("/api/health"),
   listCustomers: () => req<Customer[]>("/api/admin/customers"),
   createCustomer: (body: {
     organization: string;

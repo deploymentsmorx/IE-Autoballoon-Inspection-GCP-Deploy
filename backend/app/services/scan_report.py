@@ -70,7 +70,7 @@ def page_text(page: fitz.Page) -> str:
     return ocr if len(ocr.strip()) > len(text.strip()) else text
 
 
-def read_document_text(pdf_path: Path, max_pages: int = 4) -> tuple[str, bool]:
+def read_document_text(pdf_path: Path, max_pages: int = 20) -> tuple[str, bool]:
     doc = fitz.open(pdf_path)
     try:
         parts: list[str] = []
@@ -106,17 +106,19 @@ def page_jpegs(pdf_path: Path, max_pages: int = 3) -> list[str]:
         doc.close()
 
 
-def parse_inspection_text(text: str) -> dict[str, Any]:
-    header = dict(_EMPTY_HEADER)
-    for key, pattern in _HEADER_PATTERNS:
-        match = pattern.search(text or "")
-        if match:
-            header[key] = _clean(match.group(1))
-    rows: list[dict[str, Any]] = []
-    for line in (text or "").splitlines():
-        match = _ROW_RE.match(line.strip())
-        if not match:
-            continue
+_NUM = re.compile(r"^[-+]?\d+(?:\.\d+)?$")
+
+
+def _parse_row_line(line: str) -> dict[str, Any] | None:
+    raw = (line or "").strip()
+    if not raw or len(raw) < 3:
+        return None
+    if re.search(r"(?i)balloon|nominal|characteristic|item\s*no|part\s*number|inspection\s*report", raw) and not _NUM.match(
+        raw.split()[0]
+    ):
+        return None
+    match = _ROW_RE.match(raw)
+    if match:
         balloon = int(match.group(1))
         nominal = _clean(match.group(3), 40)
         tol_low = _clean(match.group(4) or "", 20)
@@ -124,23 +126,220 @@ def parse_inspection_text(text: str) -> dict[str, Any]:
         measured = _clean(match.group(6) or "", 40)
         remarks = _clean(match.group(7) or "", 80)
         reference = _clean(match.group(2), 40)
-        rows.append(
+        return {
+            "sno": balloon,
+            "balloon": balloon,
+            "page": 1,
+            "reference": reference,
+            "nominal": nominal,
+            "tol_low": tol_low,
+            "tol_high": tol_high,
+            "instrument": "",
+            "unit": "mm",
+            "instr_id": "",
+            "measured": [measured, ""],
+            "remarks": remarks,
+        }
+    parts = [p.strip() for p in re.split(r"[\t|;,]+|\s{2,}", raw) if p.strip()]
+    if len(parts) < 2:
+        parts = raw.split()
+    if not parts or not re.fullmatch(r"\d{1,4}", parts[0]):
+        return None
+    balloon = int(parts[0])
+    if balloon < 1 or balloon > 9999:
+        return None
+    nums = [p for p in parts[1:] if _NUM.match(p)]
+    texts = [p for p in parts[1:] if not _NUM.match(p)]
+    if not nums:
+        return None
+    nominal = nums[0]
+    extras = nums[1:]
+    if len(extras) == 0:
+        measured_vals: list[str] = []
+        tol_low = ""
+        tol_high = ""
+    elif len(extras) == 1:
+        measured_vals = [extras[0]]
+        tol_low = ""
+        tol_high = ""
+    elif len(extras) == 2:
+        measured_vals = [extras[1]]
+        tol_low = ""
+        tol_high = ""
+    else:
+        tol_low, tol_high = extras[0], extras[1]
+        measured_vals = extras[2:]
+    return {
+        "sno": balloon,
+        "balloon": balloon,
+        "page": 1,
+        "reference": _clean(" ".join(texts), 40),
+        "nominal": _clean(nominal, 40),
+        "tol_low": _clean(tol_low, 20),
+        "tol_high": _clean(tol_high, 20),
+        "instrument": "",
+        "unit": "mm",
+        "instr_id": "",
+        "measured": [_clean(v, 40) for v in measured_vals] or [""],
+        "remarks": "",
+    }
+
+
+def parse_inspection_text(text: str) -> dict[str, Any]:
+    header = dict(_EMPTY_HEADER)
+    for key, pattern in _HEADER_PATTERNS:
+        match = pattern.search(text or "")
+        if match:
+            header[key] = _clean(match.group(1))
+    rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for line in (text or "").splitlines():
+        parsed = _parse_row_line(line.strip())
+        if not parsed:
+            continue
+        balloon = int(parsed["balloon"])
+        if balloon in seen:
+            continue
+        seen.add(balloon)
+        parsed["sno"] = len(rows) + 1
+        rows.append(parsed)
+    return {**header, "rows": rows}
+
+
+def apply_suggestion_to_meta(meta: dict[str, Any], suggestion: dict[str, Any]) -> None:
+    """Fill empty job report cells from a scan. Never wipe drawing balloons or saved values."""
+    for key in _EMPTY_HEADER:
+        if not str(meta.get(key) or "").strip() and suggestion.get(key):
+            meta[key] = suggestion[key]
+    cols = meta.get("measure_columns")
+    if not isinstance(cols, list) or not cols:
+        cols = [
+            {"id": "m1", "label": "M1", "values": {}},
+            {"id": "m2", "label": "M2", "values": {}},
+        ]
+        meta["measure_columns"] = cols
+    src_rows = suggestion.get("rows") if isinstance(suggestion.get("rows"), list) else []
+    needed = 2
+    for row in src_rows:
+        measured = row.get("measured") if isinstance(row, dict) else None
+        if isinstance(measured, list):
+            needed = max(needed, len(measured))
+    while len(cols) < needed:
+        n = len(cols) + 1
+        cols.append({"id": f"m{n}", "label": f"M{n}", "values": {}})
+    existing = meta.get("report_rows")
+    if not isinstance(existing, list):
+        existing = []
+    if not existing:
+        balloons = meta.get("balloons") if isinstance(meta.get("balloons"), list) else []
+        existing = [
             {
-                "sno": len(rows) + 1,
-                "balloon": balloon,
-                "page": 1,
-                "reference": reference,
-                "nominal": nominal,
-                "tol_low": tol_low,
-                "tol_high": tol_high,
+                "sno": i + 1,
+                "balloon": b.get("balloon"),
+                "page": b.get("page") or 1,
+                "reference": f"P{b.get('page') or 1}",
+                "nominal": b.get("text") or "",
+                "tol_low": "",
+                "tol_high": "",
                 "instrument": "",
                 "unit": "mm",
                 "instr_id": "",
-                "measured": [measured, ""],
-                "remarks": remarks,
+                "measured": ["", ""],
+                "remarks": "",
+            }
+            for i, b in enumerate(balloons)
+            if isinstance(b, dict) and b.get("balloon") is not None
+        ]
+    by_balloon: dict[int, dict[str, Any]] = {}
+    for row in src_rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            by_balloon[int(row.get("balloon"))] = row
+        except (TypeError, ValueError):
+            continue
+
+    def _fill(dst: str, src: Any) -> str:
+        return str(dst or "").strip() or str(src or "").strip()
+
+    merged: list[dict[str, Any]] = []
+    have: set[int] = set()
+    for row in existing:
+        if not isinstance(row, dict):
+            continue
+        try:
+            balloon = int(row.get("balloon"))
+        except (TypeError, ValueError):
+            merged.append(row)
+            continue
+        have.add(balloon)
+        src = by_balloon.get(balloon)
+        if not src:
+            merged.append(row)
+            continue
+        incoming = src.get("measured")
+        if not isinstance(incoming, list):
+            incoming = [incoming] if incoming else []
+        measured = list(row.get("measured") or [])
+        while len(measured) < len(cols):
+            measured.append("")
+        for i, val in enumerate(incoming):
+            text = str(val or "").strip()
+            if not text:
+                continue
+            if i >= len(measured):
+                measured.append(text)
+            elif not str(measured[i] or "").strip():
+                measured[i] = text
+            if i < len(cols):
+                values = cols[i].setdefault("values", {})
+                key = str(balloon)
+                if not str(values.get(key) or "").strip():
+                    values[key] = text
+        row.update(
+            {
+                "reference": _fill(row.get("reference") or "", src.get("reference")),
+                "nominal": _fill(row.get("nominal") or "", src.get("nominal")),
+                "tol_low": _fill(row.get("tol_low") or "", src.get("tol_low")),
+                "tol_high": _fill(row.get("tol_high") or "", src.get("tol_high")),
+                "instrument": _fill(row.get("instrument") or "", src.get("instrument")),
+                "unit": _fill(row.get("unit") or "", src.get("unit")) or "mm",
+                "instr_id": _fill(row.get("instr_id") or "", src.get("instr_id")),
+                "remarks": _fill(row.get("remarks") or "", src.get("remarks")),
+                "measured": measured,
             }
         )
-    return {**header, "rows": rows}
+        merged.append(row)
+    for balloon, src in by_balloon.items():
+        if balloon in have:
+            continue
+        incoming = src.get("measured")
+        if not isinstance(incoming, list):
+            incoming = [incoming] if incoming else ["", ""]
+        for i, val in enumerate(incoming):
+            text = str(val or "").strip()
+            if text and i < len(cols):
+                cols[i].setdefault("values", {})[str(balloon)] = text
+        merged.append(
+            {
+                "sno": len(merged) + 1,
+                "balloon": balloon,
+                "page": src.get("page") or 1,
+                "reference": src.get("reference") or "",
+                "nominal": src.get("nominal") or "",
+                "tol_low": src.get("tol_low") or "",
+                "tol_high": src.get("tol_high") or "",
+                "instrument": src.get("instrument") or "",
+                "unit": src.get("unit") or "mm",
+                "instr_id": src.get("instr_id") or "",
+                "measured": incoming or ["", ""],
+                "remarks": src.get("remarks") or "",
+            }
+        )
+    for i, row in enumerate(merged):
+        row["sno"] = i + 1
+    meta["report_rows"] = merged
+    meta["measure_columns"] = cols
 
 
 def _normalize_suggestion(raw: dict[str, Any], fallback_text: str) -> dict[str, Any]:
@@ -271,5 +470,8 @@ def extract_inspection_report(pdf_path: Path) -> dict[str, Any]:
             suggestion["summary"] = "The scan was read, but no inspection fields were recognized. Fill the report by hand."
     elif openai_error and extractor != "openai":
         suggestion["summary"] += f" OpenAI was skipped ({openai_error})."
-    suggestion["summary"] += " Review the values, correct them, then Save report data."
+    suggestion["summary"] += (
+        " Measured cells colour: green = exact, yellow = in tolerance, red = out. "
+        "Review, then Save report data or download."
+    )
     return suggestion

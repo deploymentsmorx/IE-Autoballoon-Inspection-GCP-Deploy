@@ -52,12 +52,18 @@ export default function AdminPage() {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [dbMode, setDbMode] = useState("");
 
   const loadLists = async () => {
+    const health = await api.health().catch(() => null);
+    if (health?.db) setDbMode(health.db);
     const [o, e, c, inst, tabs] = await Promise.all([
       api.listOrgs(),
       api.listEngineers(),
-      api.listCustomers().catch(() => [] as Customer[]),
+      api.listCustomers().catch((ex: unknown) => {
+        setErr(ex instanceof Error ? ex.message : "Could not load registered licenses");
+        return [] as Customer[];
+      }),
       api.listInstallations().catch(() => [] as Installation[]),
       api.listTablets().catch(() => [] as TabletRecord[]),
     ]);
@@ -182,6 +188,11 @@ export default function AdminPage() {
 
         {err && <div className="error mb">{err}</div>}
         {msg && <div className="ok mb">{msg}</div>}
+        {dbMode && dbMode !== "postgres" && (
+          <div className="error mb">
+            License server (database) unavailable — API is on {dbMode}, so previously registered customers, devices, and licenses cannot load. After Postgres is connected they appear in the lists below. Tablet registration is separate and is not removed.
+          </div>
+        )}
 
         {!COSTSHEET_ADMIN_PORTAL && (
           <div className="section">
@@ -449,7 +460,7 @@ export default function AdminPage() {
           <div className="section">
             <h2>Factory tablets</h2>
             <p className="muted">
-              Tablets check in from the inspection client. Approve a tablet before it can sign in. Reports they save are stored on this Auto Balloon PC.
+              Factory tablets run InspectionTablet.exe (Windows) or InspectionTablet.apk (Android / Samsung) — not the browser. After the tablet checks in, Approve it before it can sign in. Delete removes it from this list so it must register again.
             </p>
             <table className="table mt">
               <thead>
@@ -470,7 +481,7 @@ export default function AdminPage() {
                     </td>
                     <td>{t.status}</td>
                     <td>{t.last_seen ? new Date(t.last_seen).toLocaleString() : "—"}</td>
-                    <td>
+                    <td style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                       {t.status !== "approved" && (
                         <button
                           className="btn btn-outline btn-sm"
@@ -495,6 +506,22 @@ export default function AdminPage() {
                           Reject
                         </button>
                       )}
+                      <button
+                        className="btn btn-outline btn-sm"
+                        style={{ width: "auto", color: "#b42318" }}
+                        onClick={() => {
+                          const label = t.label || t.hostname || t.device_id;
+                          if (!window.confirm(`Delete tablet ${label}? It must register again from InspectionTablet.exe.`)) return;
+                          void api
+                            .removeTablet(t.device_id)
+                            .then(() => loadLists())
+                            .catch((ex: unknown) => {
+                              setErr(ex instanceof Error ? ex.message : "Could not delete tablet");
+                            });
+                        }}
+                      >
+                        Delete
+                      </button>
                     </td>
                   </tr>
                 ))}

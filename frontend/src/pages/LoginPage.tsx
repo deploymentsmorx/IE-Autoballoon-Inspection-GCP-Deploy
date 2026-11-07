@@ -31,7 +31,7 @@ export default function LoginPage() {
     );
   }
 
-  if (desktop && !isLicenseActivated()) {
+  if (desktop && !isTabletClient() && !isLicenseActivated()) {
     return <Navigate to="/activate" replace />;
   }
 
@@ -40,7 +40,7 @@ export default function LoginPage() {
       return <Navigate to="/access-denied" replace />;
     }
     if (user.must_change_password) return <Navigate to="/change-password" replace />;
-    return <Navigate to={user.role === "super_admin" ? "/admin" : "/app"} replace />;
+    return <Navigate to={isTabletClient() || user.role !== "super_admin" ? "/app" : "/admin"} replace />;
   }
 
   const onSubmit = async (e: FormEvent) => {
@@ -70,7 +70,7 @@ export default function LoginPage() {
         nav("/change-password");
         return;
       }
-      nav(me.role === "super_admin" ? "/admin" : "/app");
+      nav(isTabletClient() || me.role !== "super_admin" ? "/app" : "/admin");
     } catch (ex: any) {
       const msg = ex.message || "Login failed";
       // Server has no (matching) installation for this device — usually because
@@ -131,7 +131,7 @@ export default function LoginPage() {
           {COSTSHEET_ADMIN_PORTAL
             ? "Authorized super-admin access only."
             : "Your super admin must grant access before you can use the app."}
-          {desktop && (
+          {desktop && !isTabletClient() && (
             <>
               {" "}
               Need first-time setup?{" "}
@@ -140,11 +140,12 @@ export default function LoginPage() {
               </a>
             </>
           )}
-          {!COSTSHEET_ADMIN_PORTAL && (
+          {isTabletClient() && (
             <>
               {" "}
+              First-time tablet?{" "}
               <Link to="/tablet" style={{ color: "var(--blue)" }}>
-                Set up a factory tablet
+                Register this tablet
               </Link>
             </>
           )}

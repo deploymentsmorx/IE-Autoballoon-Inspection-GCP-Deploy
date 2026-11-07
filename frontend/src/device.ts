@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { TABLET_EXE } from "./constants/branding";
 
 const DEVICE_KEY = "smorx_device_id";
 const HOST_KEY = "smorx_hostname";
@@ -6,7 +7,7 @@ const ACTIVATED_KEY = "smorx_license_activated";
 const TABLET_KEY = "smorx_client";
 
 export function isTabletClient(): boolean {
-  return localStorage.getItem(TABLET_KEY) === "tablet";
+  return TABLET_EXE || localStorage.getItem(TABLET_KEY) === "tablet";
 }
 
 export function markTabletClient(): void {
@@ -14,7 +15,16 @@ export function markTabletClient(): void {
 }
 
 export function clearTabletClient(): void {
+  if (TABLET_EXE) return;
   localStorage.removeItem(TABLET_KEY);
+}
+
+if (TABLET_EXE) {
+  try {
+    markTabletClient();
+  } catch {
+    /* localStorage may be unavailable during SSR */
+  }
 }
 
 export type DeviceInfo = {
@@ -29,13 +39,24 @@ function randomToken(): string {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`.toUpperCase();
 }
 
+function isNativeAndroid(): boolean {
+  if (typeof window === "undefined") return false;
+  const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean; getPlatform?: () => string } })
+    .Capacitor;
+  try {
+    return Boolean(cap?.isNativePlatform?.() && cap.getPlatform?.() === "android");
+  } catch {
+    return false;
+  }
+}
+
 function fallbackDeviceId(): DeviceInfo {
   let id = localStorage.getItem(DEVICE_KEY);
   if (!id) {
-    id = `DEV-WEB-${randomToken()}`;
+    id = isNativeAndroid() ? `DEV-ANDROID-${randomToken()}` : `DEV-WEB-${randomToken()}`;
     localStorage.setItem(DEVICE_KEY, id);
   }
-  const hostname = localStorage.getItem(HOST_KEY) || "browser";
+  const hostname = localStorage.getItem(HOST_KEY) || (isNativeAndroid() ? "android-tablet" : "browser");
   return { device_id: id, hostname };
 }
 

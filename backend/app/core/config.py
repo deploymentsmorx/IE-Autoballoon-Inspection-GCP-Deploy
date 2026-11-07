@@ -26,13 +26,25 @@ class Settings:
         in {"1", "true", "yes"}
     )
     database_url: str = (os.getenv("DATABASE_URL") or "").strip()
-    # Production compose points Inspection at its own local Postgres service.
-    # This takes precedence over legacy DATABASE_URL values in old env files.
+    # Optional dedicated license/customer database (Cost Sheet, Inspection, DMS).
+    license_database_url: str = (os.getenv("LICENSE_DATABASE_URL") or "").strip()
+    # Local compose Postgres is only used when no shared DATABASE_URL is set.
+    # Forcing @db:5432 over the Lightsail Postgres URL hid every previously
+    # registered license. Keep the server URL so tablet features do not replace existing data.
     if (os.getenv("INSPECTION_USE_LOCAL_POSTGRES") or "").strip().lower() in {"1", "true", "yes"}:
         pg_user = quote((os.getenv("POSTGRES_USER") or "postgres").strip(), safe="")
         pg_password = quote(os.getenv("POSTGRES_PASSWORD") or "", safe="")
         pg_database = quote((os.getenv("POSTGRES_DB") or "inspection").strip(), safe="")
-        database_url = f"postgresql://{pg_user}:{pg_password}@db:5432/{pg_database}"
+        local_url = f"postgresql://{pg_user}:{pg_password}@db:5432/{pg_database}"
+        shared = license_database_url or database_url
+        if shared and "@db:" not in shared and "@db/" not in shared:
+            database_url = shared
+        elif not database_url:
+            database_url = local_url
+    if license_database_url:
+        database_url = license_database_url
+    # When DATABASE_URL is set (AWS / Lightsail Postgres), never write licenses to JSON.
+    json_store_allowed: bool = not bool(database_url)
     jwt_secret: str = os.getenv("JWT_SECRET", "smorx-dev-secret-change-in-prod")
     jwt_algorithm: str = "HS256"
     pwd_pepper: str = os.getenv("PWD_PEPPER", "smorx-pepper")
