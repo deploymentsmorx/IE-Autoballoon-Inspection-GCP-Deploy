@@ -746,7 +746,7 @@ export const api = {
     await new Promise((r) => setTimeout(r, 40));
     if (isTabletDownload()) {
       const file = await api.tabletExport(jobId, "pdf", filename, opts?.filter);
-      return { tablet: await saveTabletBytes(file.url, file.filename), url: file.url, filename: file.filename };
+      return { tablet: "needs-tap" as const, url: file.url, filename: file.filename };
     }
     return api.downloadFile(api.downloadReportPdf(jobId, opts?.filter), filename);
   },

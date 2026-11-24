@@ -75,6 +75,19 @@ input, select, button, textarea { font: inherit; }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 .btn-sm { padding: 6px 10px; font-size: 0.82rem; border-radius: 8px; }
 .btn-primary { background: linear-gradient(180deg, var(--blue), var(--blue-2)); }
+.tablet-save-btn {
+  display: block;
+  width: 100%;
+  margin: 8px 0;
+  padding: 0.85rem 1rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #fff;
+  background: #0e6b66;
+  border: 1px solid #0a4e4a;
+  border-radius: 4px;
+  cursor: pointer;
+}
 .btn-gold { background: linear-gradient(180deg, #dbb43a, #a88416); color: #1a1405; font-weight: 600; }
 .report-scan-bar {
   display: flex;

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import {
   api,
-  saveTabletBytes,
   isTabletDownload,
   measureStatus,
   openTabletUrl,
@@ -607,9 +606,6 @@ export default function InspectionPage() {
     if (!jobId) throw new Error("No job loaded — upload a drawing first.");
     if (isTabletDownload()) {
       const file = await api.tabletExport(jobId, kind, filename, filter);
-      const savedMode = await saveTabletBytes(file.url, file.filename);
-      if (savedMode === "saved") return { mode: "saved" as const, path: "My Files → Download" };
-      if (savedMode === "started") return { mode: "started" as const };
       setTabletSave(file);
       return { mode: "tap" as const };
     }
@@ -1657,31 +1653,24 @@ export default function InspectionPage() {
       {tabletSave && (
         <div className="report-modal-backdrop" style={{ zIndex: 1300 }} onClick={() => setTabletSave(null)}>
           <div className="report-modal" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
-            <h2 style={{ marginTop: 0 }}>Save {tabletSave.filename}</h2>
+            <h2 style={{ marginTop: 0 }}>Save file</h2>
             <p>
-              Tap Save. The file opens or Samsung shows a download. If it opens on screen, use the menu (⋮) → Download
-              or Save, then press Back to return here. Find it in My Files → Download.
+              Tap the green button. The file saves to My Files → Download. If it opens on screen, use the menu (⋮) → Download or Save, then press Back.
             </p>
-            <div className="row">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  void saveTabletBytes(tabletSave.url, tabletSave.filename).then((mode) => {
-                    if (mode === "needs-tap") openTabletUrl(tabletSave.url);
-                    setTabletSave(null);
-                    setAuditMsg("Saved. Open My Files → Download.");
-                  }).catch((ex: unknown) => {
-                    setErr(ex instanceof Error ? ex.message : "Could not save the file");
-                  });
-                }}
-              >
-                Save {tabletSave.filename}
-              </button>
-              <button type="button" className="btn btn-ghost" onClick={() => setTabletSave(null)}>
-                Cancel
-              </button>
-            </div>
+            <button
+              type="button"
+              className="tablet-save-btn"
+              onClick={() => {
+                openTabletUrl(tabletSave.url);
+                setAuditMsg("Saving to My Files → Download.");
+                setTabletSave(null);
+              }}
+            >
+              Save {tabletSave.filename}
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={() => setTabletSave(null)}>
+              Cancel
+            </button>
           </div>
         </div>
       )}
