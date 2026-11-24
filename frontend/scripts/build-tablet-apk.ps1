@@ -30,31 +30,20 @@ $env:JAVA_HOME = $Jdk
 $env:ANDROID_HOME = $Sdk
 $env:ANDROID_SDK_ROOT = $Sdk
 $env:Path = "$Jdk\bin;$Sdk\platform-tools;" + $env:Path
-$env:VITE_API_URL = $ApiUrl.TrimEnd("/")
-$env:VITE_TABLET_CLIENT = "true"
 $env:CAPACITOR_SERVER_URL = $WebUrl.TrimEnd("/")
 
-Set-Location $Root
-Write-Host "VITE_API_URL = $env:VITE_API_URL"
-Write-Host "CAPACITOR_SERVER_URL = $env:CAPACITOR_SERVER_URL"
-Write-Host "VITE_TABLET_CLIENT = true"
-
-npm run build
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-if (-not (Test-Path (Join-Path $Root "android\app"))) {
-  npx cap add android
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$Shell = Join-Path (Split-Path -Parent $Root) "android-tablet"
+if (-not (Test-Path (Join-Path $Shell "gradlew.bat"))) {
+  Write-Error "android-tablet project is missing."
 }
+Write-Host "Building the same WebView APK as Quality Inspection"
+Write-Host "Server = $($WebUrl.TrimEnd('/'))"
 
-npx cap sync android
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-Set-Location (Join-Path $Root "android")
+Set-Location $Shell
 & .\gradlew.bat assembleDebug --no-daemon
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$apk = Join-Path $Root "android\app\build\outputs\apk\debug\app-debug.apk"
+$apk = Join-Path $Shell "app\build\outputs\apk\debug\app-debug.apk"
 $outDir = Join-Path $Root "dist-desktop"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $dest = Join-Path $outDir "InspectionReport.apk"
