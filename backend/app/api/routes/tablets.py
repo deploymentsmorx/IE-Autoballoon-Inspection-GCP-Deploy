@@ -16,11 +16,12 @@ class TabletCheckIn(BaseModel):
     hostname: str = ""
     label: str = ""
     model: str = ""
+    imei: str = ""
 
 
 @router.post("/api/tablets/check-in")
 def check_in(body: TabletCheckIn):
-    return tablet_registry.check_in(body.device_id, body.hostname, body.label, body.model)
+    return tablet_registry.check_in(body.device_id, body.hostname, body.label, body.model, body.imei)
 
 
 @router.get("/api/tablets/status")

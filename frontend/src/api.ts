@@ -318,10 +318,10 @@ export const api = {
     req<{ token: string; user: User }>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password, ...device, tablet_id: tabletId || undefined })}),
-  checkInTablet: (device_id: string, hostname: string, label = "", model = "") =>
+  checkInTablet: (device_id: string, hostname: string, label = "", model = "", imei = "") =>
     req<TabletRecord>("/api/tablets/check-in", {
       method: "POST",
-      body: JSON.stringify({ device_id, hostname, label, model }),
+      body: JSON.stringify({ device_id, hostname, label, model, imei }),
     }),
   tabletStatus: (deviceId: string) =>
     req<TabletRecord>(`/api/tablets/status?device_id=${encodeURIComponent(deviceId)}`),
@@ -979,6 +979,7 @@ export type TabletRecord = {
   hostname: string;
   label?: string;
   model?: string;
+  imei?: string;
   serial?: string;
   status: string;
   first_seen?: string;

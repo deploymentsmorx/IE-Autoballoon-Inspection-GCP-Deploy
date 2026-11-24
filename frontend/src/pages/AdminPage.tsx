@@ -35,8 +35,6 @@ export default function AdminPage() {
   const [engineers, setEngineers] = useState<Engineer[]>([]);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [tablets, setTablets] = useState<TabletRecord[]>([]);
-  const [tabletName, setTabletName] = useState("");
-  const [tabletDeviceId, setTabletDeviceId] = useState("");
   const [tabletNames, setTabletNames] = useState<Record<string, string>>({});
   const [installs, setInstalls] = useState<Installation[]>([]);
 
@@ -463,57 +461,13 @@ export default function AdminPage() {
           <div className="section">
             <h2>Factory tablets</h2>
             <p className="muted">
-              Open the Auto ballooning software app on the tablet. Model name and serial number are detected and appear here. Type the person’s name, then Approve.
+              Open the Auto ballooning software app on the tablet. Allow the phone permission if Android asks. The model and IMEI appear here. Type the person’s name, then Approve.
             </p>
-            <div className="row mt" style={{ alignItems: "flex-end" }}>
-              <div className="field" style={{ margin: 0, minWidth: 180, flex: 1 }}>
-                <label>Tablet name</label>
-                <input value={tabletName} onChange={(e) => setTabletName(e.target.value)} placeholder="Sagar tablet" />
-              </div>
-              <div className="field" style={{ margin: 0, minWidth: 220, flex: 1 }}>
-                <label>Tablet device ID</label>
-                <input
-                  value={tabletDeviceId}
-                  onChange={(e) => setTabletDeviceId(e.target.value)}
-                  placeholder="DEV-ANDROID-…"
-                  autoCapitalize="characters"
-                />
-              </div>
-              <button
-                className="btn btn-primary"
-                style={{ width: "auto" }}
-                disabled={busy}
-                onClick={() => {
-                  const name = tabletName.trim();
-                  const id = tabletDeviceId.trim();
-                  if (!name || !id) {
-                    setErr("Enter the tablet name and device ID.");
-                    return;
-                  }
-                  setBusy(true);
-                  setErr("");
-                  void api
-                    .addTablet(id, name, name)
-                    .then(() => {
-                      setTabletName("");
-                      setTabletDeviceId("");
-                      setMsg(`Tablet ${name} added and approved.`);
-                      return loadLists();
-                    })
-                    .catch((ex: unknown) => {
-                      setErr(ex instanceof Error ? ex.message : "Could not add tablet");
-                    })
-                    .finally(() => setBusy(false));
-                }}
-              >
-                Add tablet
-              </button>
-            </div>
             <table className="table mt">
               <thead>
                 <tr>
                   <th>Model</th>
-                  <th>Serial number</th>
+                  <th>IMEI</th>
                   <th>Name</th>
                   <th>Status</th>
                   <th>Last seen</th>
@@ -525,7 +479,7 @@ export default function AdminPage() {
                   <tr key={t.device_id}>
                     <td>{t.model || t.hostname || "—"}</td>
                     <td>
-                      <code>{t.serial || t.device_id}</code>
+                      <code>{t.imei || t.serial || t.device_id}</code>
                     </td>
                     <td>
                       {t.status === "approved" ? (

@@ -19,17 +19,22 @@ const LAST_ROUTE_KEY = "smorx_last_route";
 function TabletCheckInBoot() {
   useEffect(() => {
     let tries = 0;
+    let sent = "";
     const timer = window.setInterval(() => {
       tries += 1;
       const native = readNativeTablet();
       if (native) {
         markTabletClient();
-        void api.checkInTablet(native.device_id, native.hostname, "", native.model).catch(() => {});
-        window.clearInterval(timer);
-      } else if (tries > 12) {
+        const key = `${native.device_id}|${native.imei}`;
+        if (key !== sent) {
+          sent = key;
+          void api.checkInTablet(native.device_id, native.hostname, "", native.model, native.imei).catch(() => {});
+        }
+        if (native.imei || tries > 40) window.clearInterval(timer);
+      } else if (tries > 40) {
         window.clearInterval(timer);
       }
-    }, 500);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, []);
   return null;

@@ -42,16 +42,17 @@ def normalize_device_id(device_id: str) -> str:
     if not _DEVICE_RE.match(device_id):
         raise HTTPException(
             status_code=400,
-            detail="Device ID must be the tablet serial or ANDROID_ID.",
+            detail="Device ID must be the tablet IMEI.",
         )
     return device_id
 
 
-def check_in(device_id: str, hostname: str, label: str = "", model: str = "") -> dict:
+def check_in(device_id: str, hostname: str, label: str = "", model: str = "", imei: str = "") -> dict:
     device_id = normalize_device_id(device_id)
     hostname = (hostname or model or "Android tablet").strip()
     label = (label or "").strip()
     model = (model or hostname).strip()
+    imei = "".join(ch for ch in (imei or "") if ch.isdigit())[:20]
     if len(hostname) > 80 or len(label) > 80 or len(model) > 80:
         raise HTTPException(status_code=400, detail="Tablet name is too long")
     with _LOCK:
@@ -65,6 +66,7 @@ def check_in(device_id: str, hostname: str, label: str = "", model: str = "") ->
                 "hostname": hostname,
                 "label": label,
                 "model": model,
+                "imei": imei,
                 "serial": device_id,
                 "status": "pending",
                 "first_seen": now,
@@ -75,6 +77,7 @@ def check_in(device_id: str, hostname: str, label: str = "", model: str = "") ->
         else:
             row["hostname"] = hostname or row.get("hostname")
             row["model"] = model or row.get("model") or ""
+            row["imei"] = imei or row.get("imei") or ""
             row["serial"] = device_id
             row["last_seen"] = now
             if label:
