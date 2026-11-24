@@ -13,7 +13,7 @@ from fastapi import HTTPException
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = ROOT / "data" / "tablets.json"
 _LOCK = threading.Lock()
-_DEVICE_RE = re.compile(r"^DEV-[A-Z0-9-]{4,80}$")
+_DEVICE_RE = re.compile(r"^[A-Z0-9._-]{4,80}$")
 
 
 def _now() -> str:
@@ -42,18 +42,17 @@ def normalize_device_id(device_id: str) -> str:
     if not _DEVICE_RE.match(device_id):
         raise HTTPException(
             status_code=400,
-            detail="device_id must look like DEV-… — copy it from the tablet setup screen",
+            detail="Device ID must be the tablet serial or ANDROID_ID.",
         )
     return device_id
 
 
-def check_in(device_id: str, hostname: str, label: str = "") -> dict:
+def check_in(device_id: str, hostname: str, label: str = "", model: str = "") -> dict:
     device_id = normalize_device_id(device_id)
-    hostname = (hostname or "").strip()
-    label = (label or hostname or "Tablet").strip()
-    if not hostname:
-        raise HTTPException(status_code=400, detail="Tablet name is required")
-    if len(hostname) > 80 or len(label) > 80:
+    hostname = (hostname or model or "Android tablet").strip()
+    label = (label or "").strip()
+    model = (model or hostname).strip()
+    if len(hostname) > 80 or len(label) > 80 or len(model) > 80:
         raise HTTPException(status_code=400, detail="Tablet name is too long")
     with _LOCK:
         data = _load()
@@ -65,6 +64,8 @@ def check_in(device_id: str, hostname: str, label: str = "") -> dict:
                 "device_id": device_id,
                 "hostname": hostname,
                 "label": label,
+                "model": model,
+                "serial": device_id,
                 "status": "pending",
                 "first_seen": now,
                 "last_seen": now,
@@ -72,9 +73,12 @@ def check_in(device_id: str, hostname: str, label: str = "") -> dict:
             }
             rows.append(row)
         else:
-            row["hostname"] = hostname
-            row["label"] = label or row.get("label") or hostname
+            row["hostname"] = hostname or row.get("hostname")
+            row["model"] = model or row.get("model") or ""
+            row["serial"] = device_id
             row["last_seen"] = now
+            if label:
+                row["label"] = label
             if row.get("status") not in {"pending", "approved", "rejected"}:
                 row["status"] = "pending"
         _save(data)
@@ -132,6 +136,22 @@ def list_tablets() -> list[dict]:
         rows = [dict(r) for r in data["tablets"]]
     rows.sort(key=lambda r: r.get("last_seen") or "", reverse=True)
     return rows
+
+
+def set_label(device_id: str, label: str) -> dict:
+    device_id = normalize_device_id(device_id)
+    label = (label or "").strip()
+    if not label or len(label) > 80:
+        raise HTTPException(status_code=400, detail="Tablet name is required")
+    with _LOCK:
+        data = _load()
+        row = next((r for r in data["tablets"] if r.get("device_id") == device_id), None)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Tablet has not checked in yet")
+        row["label"] = label
+        row["hostname"] = label
+        _save(data)
+        return dict(row)
 
 
 def set_status(device_id: str, status: str) -> dict:

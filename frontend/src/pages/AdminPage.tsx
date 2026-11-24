@@ -37,6 +37,7 @@ export default function AdminPage() {
   const [tablets, setTablets] = useState<TabletRecord[]>([]);
   const [tabletName, setTabletName] = useState("");
   const [tabletDeviceId, setTabletDeviceId] = useState("");
+  const [tabletNames, setTabletNames] = useState<Record<string, string>>({});
   const [installs, setInstalls] = useState<Installation[]>([]);
 
   const [companyName, setCompanyName] = useState("");
@@ -462,7 +463,7 @@ export default function AdminPage() {
           <div className="section">
             <h2>Factory tablets</h2>
             <p className="muted">
-              This is for the Android tablet, not the desktop EXE. Type the tablet name and the device ID from the tablet setup screen (it starts with DEV-). Add tablet approves it so that tablet can sign in.
+              Open the Auto ballooning software app on the tablet. Model name and serial number are detected and appear here. Type the person’s name, then Approve.
             </p>
             <div className="row mt" style={{ alignItems: "flex-end" }}>
               <div className="field" style={{ margin: 0, minWidth: 180, flex: 1 }}>
@@ -511,8 +512,9 @@ export default function AdminPage() {
             <table className="table mt">
               <thead>
                 <tr>
+                  <th>Model</th>
+                  <th>Serial number</th>
                   <th>Name</th>
-                  <th>Device ID</th>
                   <th>Status</th>
                   <th>Last seen</th>
                   <th></th>
@@ -521,9 +523,22 @@ export default function AdminPage() {
               <tbody>
                 {tablets.map((t) => (
                   <tr key={t.device_id}>
-                    <td>{t.label || t.hostname}</td>
+                    <td>{t.model || t.hostname || "—"}</td>
                     <td>
-                      <code>{t.device_id}</code>
+                      <code>{t.serial || t.device_id}</code>
+                    </td>
+                    <td>
+                      {t.status === "approved" ? (
+                        t.label || t.hostname
+                      ) : (
+                        <input
+                          value={tabletNames[t.device_id] ?? t.label ?? ""}
+                          placeholder="Sagar"
+                          onChange={(e) =>
+                            setTabletNames((current) => ({ ...current, [t.device_id]: e.target.value }))
+                          }
+                        />
+                      )}
                     </td>
                     <td>{t.status}</td>
                     <td>{t.last_seen ? new Date(t.last_seen).toLocaleString() : "—"}</td>
@@ -532,7 +547,12 @@ export default function AdminPage() {
                         <button
                           className="btn btn-outline btn-sm"
                           onClick={() => {
-                            void api.approveTablet(t.device_id).then(() => loadLists()).catch((ex: unknown) => {
+                            const name = (tabletNames[t.device_id] ?? t.label ?? "").trim();
+                            if (!name) {
+                              setErr("Type a name for this tablet, then Approve.");
+                              return;
+                            }
+                            void api.approveTablet(t.device_id, name).then(() => loadLists()).catch((ex: unknown) => {
                               setErr(ex instanceof Error ? ex.message : "Could not approve tablet");
                             });
                           }}
@@ -573,7 +593,7 @@ export default function AdminPage() {
                 ))}
                 {!tablets.length && (
                   <tr>
-                    <td colSpan={5} className="muted">
+                    <td colSpan={6} className="muted">
                       No tablets have checked in yet
                     </td>
                   </tr>

@@ -318,10 +318,10 @@ export const api = {
     req<{ token: string; user: User }>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password, ...device, tablet_id: tabletId || undefined })}),
-  checkInTablet: (device_id: string, hostname: string, label = hostname) =>
+  checkInTablet: (device_id: string, hostname: string, label = "", model = "") =>
     req<TabletRecord>("/api/tablets/check-in", {
       method: "POST",
-      body: JSON.stringify({ device_id, hostname, label }),
+      body: JSON.stringify({ device_id, hostname, label, model }),
     }),
   tabletStatus: (deviceId: string) =>
     req<TabletRecord>(`/api/tablets/status?device_id=${encodeURIComponent(deviceId)}`),
@@ -331,8 +331,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ device_id, hostname, label }),
     }),
-  approveTablet: (deviceId: string) =>
-    req<TabletRecord>(`/api/admin/tablets/${encodeURIComponent(deviceId)}/approve`, { method: "POST" }),
+  approveTablet: (deviceId: string, label = "") =>
+    req<TabletRecord>(
+      `/api/admin/tablets/${encodeURIComponent(deviceId)}/approve${label ? `?label=${encodeURIComponent(label)}` : ""}`,
+      { method: "POST" },
+    ),
   rejectTablet: (deviceId: string) =>
     req<TabletRecord>(`/api/admin/tablets/${encodeURIComponent(deviceId)}/reject`, { method: "POST" }),
   removeTablet: (deviceId: string) =>
@@ -975,6 +978,8 @@ export type TabletRecord = {
   device_id: string;
   hostname: string;
   label?: string;
+  model?: string;
+  serial?: string;
   status: string;
   first_seen?: string;
   last_seen?: string;

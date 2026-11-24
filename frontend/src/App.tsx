@@ -8,7 +8,7 @@ import AdminPage from "./pages/AdminPage";
 import InspectionPage from "./pages/InspectionPage";
 import TabletPage from "./pages/TabletPage";
 import { api } from "./api";
-import { getDeviceInfo, isDesktopApp, isLicenseActivated, isTabletClient, verifyActivationWithServer } from "./device";
+import { getDeviceInfo, isDesktopApp, isLicenseActivated, isTabletClient, markTabletClient, readNativeTablet, verifyActivationWithServer } from "./device";
 import { APP_TITLE, COSTSHEET_ADMIN_PORTAL } from "./constants/branding";
 
 const LAST_ROUTE_KEY = "smorx_last_route";
@@ -16,6 +16,25 @@ const LAST_ROUTE_KEY = "smorx_last_route";
 /** Runs once at startup: if desktop and not locally marked activated, ask the
  *  backend whether this machine is already an approved installation before any
  *  page's synchronous isLicenseActivated() check runs. */
+function TabletCheckInBoot() {
+  useEffect(() => {
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      tries += 1;
+      const native = readNativeTablet();
+      if (native) {
+        markTabletClient();
+        void api.checkInTablet(native.device_id, native.hostname, "", native.model).catch(() => {});
+        window.clearInterval(timer);
+      } else if (tries > 12) {
+        window.clearInterval(timer);
+      }
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, []);
+  return null;
+}
+
 function ActivationBoot({ children }: { children: React.ReactNode }) {
   const [checked, setChecked] = useState(false);
 
@@ -138,6 +157,7 @@ export default function App() {
   return (
     <AuthProvider>
       <HashRouter>
+        <TabletCheckInBoot />
         <ActivationBoot>
           <AuthBoot>
             <RememberRoute />

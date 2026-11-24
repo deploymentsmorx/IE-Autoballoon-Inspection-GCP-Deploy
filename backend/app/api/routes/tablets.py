@@ -13,13 +13,14 @@ router = APIRouter(tags=["tablets"])
 
 class TabletCheckIn(BaseModel):
     device_id: str
-    hostname: str
+    hostname: str = ""
     label: str = ""
+    model: str = ""
 
 
 @router.post("/api/tablets/check-in")
 def check_in(body: TabletCheckIn):
-    return tablet_registry.check_in(body.device_id, body.hostname, body.label)
+    return tablet_registry.check_in(body.device_id, body.hostname, body.label, body.model)
 
 
 @router.get("/api/tablets/status")
@@ -38,7 +39,9 @@ def add_tablet(body: TabletCheckIn, user: dict = Depends(require_admin)):
 
 
 @router.post("/api/admin/tablets/{device_id}/approve")
-def approve(device_id: str, user: dict = Depends(require_admin)):
+def approve(device_id: str, label: str = "", user: dict = Depends(require_admin)):
+    if label.strip():
+        tablet_registry.set_label(device_id, label.strip())
     return tablet_registry.set_status(device_id, "approved")
 
 

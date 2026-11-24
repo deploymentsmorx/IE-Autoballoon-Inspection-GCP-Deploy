@@ -19,7 +19,35 @@ export function clearTabletClient(): void {
   localStorage.removeItem(TABLET_KEY);
 }
 
-if (TABLET_EXE) {
+export type NativeTablet = {
+  model: string;
+  serial: string;
+  device_id: string;
+  hostname: string;
+};
+
+/** Present only inside the Auto Balloon Android APK. */
+export function readNativeTablet(): NativeTablet | null {
+  if (typeof window === "undefined") return null;
+  const bridge = (window as Window & { SmorxDevice?: { getDeviceInfo?: () => string } }).SmorxDevice;
+  if (!bridge || typeof bridge.getDeviceInfo !== "function") return null;
+  try {
+    const raw = bridge.getDeviceInfo();
+    const info = JSON.parse(raw) as NativeTablet;
+    const serial = (info.serial || info.device_id || "").trim();
+    if (!serial) return null;
+    return {
+      model: (info.model || "").trim(),
+      serial,
+      device_id: serial,
+      hostname: (info.hostname || info.model || "Android tablet").trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+if (TABLET_EXE || readNativeTablet()) {
   try {
     markTabletClient();
   } catch {
@@ -57,6 +85,12 @@ function isNativeAndroid(): boolean {
 }
 
 function fallbackDeviceId(): DeviceInfo {
+  const native = readNativeTablet();
+  if (native) {
+    localStorage.setItem(DEVICE_KEY, native.device_id);
+    localStorage.setItem(HOST_KEY, native.hostname);
+    return { device_id: native.device_id, hostname: native.hostname };
+  }
   let id = localStorage.getItem(DEVICE_KEY);
   if (!id) {
     id = isNativeAndroid() ? `DEV-ANDROID-${randomToken()}` : `DEV-WEB-${randomToken()}`;
