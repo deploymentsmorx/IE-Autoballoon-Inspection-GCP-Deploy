@@ -35,6 +35,8 @@ export default function AdminPage() {
   const [engineers, setEngineers] = useState<Engineer[]>([]);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [tablets, setTablets] = useState<TabletRecord[]>([]);
+  const [tabletName, setTabletName] = useState("");
+  const [tabletDeviceId, setTabletDeviceId] = useState("");
   const [installs, setInstalls] = useState<Installation[]>([]);
 
   const [companyName, setCompanyName] = useState("");
@@ -460,8 +462,52 @@ export default function AdminPage() {
           <div className="section">
             <h2>Factory tablets</h2>
             <p className="muted">
-              Factory tablets run InspectionTablet.exe (Windows) or InspectionTablet.apk (Android / Samsung) — not the browser. After the tablet checks in, Approve it before it can sign in. Delete removes it from this list so it must register again.
+              This is for the Android tablet, not the desktop EXE. Type the tablet name and the device ID from the tablet setup screen (it starts with DEV-). Add tablet approves it so that tablet can sign in.
             </p>
+            <div className="row mt" style={{ alignItems: "flex-end" }}>
+              <div className="field" style={{ margin: 0, minWidth: 180, flex: 1 }}>
+                <label>Tablet name</label>
+                <input value={tabletName} onChange={(e) => setTabletName(e.target.value)} placeholder="Sagar tablet" />
+              </div>
+              <div className="field" style={{ margin: 0, minWidth: 220, flex: 1 }}>
+                <label>Tablet device ID</label>
+                <input
+                  value={tabletDeviceId}
+                  onChange={(e) => setTabletDeviceId(e.target.value)}
+                  placeholder="DEV-ANDROID-…"
+                  autoCapitalize="characters"
+                />
+              </div>
+              <button
+                className="btn btn-primary"
+                style={{ width: "auto" }}
+                disabled={busy}
+                onClick={() => {
+                  const name = tabletName.trim();
+                  const id = tabletDeviceId.trim();
+                  if (!name || !id) {
+                    setErr("Enter the tablet name and device ID.");
+                    return;
+                  }
+                  setBusy(true);
+                  setErr("");
+                  void api
+                    .addTablet(id, name, name)
+                    .then(() => {
+                      setTabletName("");
+                      setTabletDeviceId("");
+                      setMsg(`Tablet ${name} added and approved.`);
+                      return loadLists();
+                    })
+                    .catch((ex: unknown) => {
+                      setErr(ex instanceof Error ? ex.message : "Could not add tablet");
+                    })
+                    .finally(() => setBusy(false));
+                }}
+              >
+                Add tablet
+              </button>
+            </div>
             <table className="table mt">
               <thead>
                 <tr>

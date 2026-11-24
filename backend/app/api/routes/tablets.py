@@ -32,6 +32,11 @@ def list_tablets(user: dict = Depends(require_admin)):
     return tablet_registry.list_tablets()
 
 
+@router.post("/api/admin/tablets")
+def add_tablet(body: TabletCheckIn, user: dict = Depends(require_admin)):
+    return tablet_registry.add_approved(body.device_id, body.hostname, body.label or body.hostname)
+
+
 @router.post("/api/admin/tablets/{device_id}/approve")
 def approve(device_id: str, user: dict = Depends(require_admin)):
     return tablet_registry.set_status(device_id, "approved")

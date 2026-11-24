@@ -326,6 +326,11 @@ export const api = {
   tabletStatus: (deviceId: string) =>
     req<TabletRecord>(`/api/tablets/status?device_id=${encodeURIComponent(deviceId)}`),
   listTablets: () => req<TabletRecord[]>("/api/admin/tablets"),
+  addTablet: (device_id: string, hostname: string, label = hostname) =>
+    req<TabletRecord>("/api/admin/tablets", {
+      method: "POST",
+      body: JSON.stringify({ device_id, hostname, label }),
+    }),
   approveTablet: (deviceId: string) =>
     req<TabletRecord>(`/api/admin/tablets/${encodeURIComponent(deviceId)}/approve`, { method: "POST" }),
   rejectTablet: (deviceId: string) =>

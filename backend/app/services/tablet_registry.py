@@ -91,6 +91,41 @@ def get_status(device_id: str) -> dict:
     return dict(row)
 
 
+def add_approved(device_id: str, hostname: str, label: str = "") -> dict:
+    """Super Admin adds a tablet directly. It is approved and can sign in."""
+    device_id = normalize_device_id(device_id)
+    hostname = (hostname or "").strip()
+    label = (label or hostname or "Tablet").strip()
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Tablet name is required")
+    if len(hostname) > 80 or len(label) > 80:
+        raise HTTPException(status_code=400, detail="Tablet name is too long")
+    now = _now()
+    with _LOCK:
+        data = _load()
+        rows: list[dict] = data["tablets"]
+        row = next((r for r in rows if r.get("device_id") == device_id), None)
+        if row is None:
+            row = {
+                "device_id": device_id,
+                "hostname": hostname,
+                "label": label,
+                "status": "approved",
+                "first_seen": now,
+                "last_seen": now,
+                "approved_at": now,
+            }
+            rows.append(row)
+        else:
+            row["hostname"] = hostname
+            row["label"] = label
+            row["status"] = "approved"
+            row["last_seen"] = now
+            row["approved_at"] = now
+        _save(data)
+        return dict(row)
+
+
 def list_tablets() -> list[dict]:
     with _LOCK:
         data = _load()
