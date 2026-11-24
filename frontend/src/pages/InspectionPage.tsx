@@ -651,10 +651,6 @@ export default function InspectionPage() {
         setAuditMsg("Tap Save. The file downloads to My Files → Download.");
         return;
       }
-      if (saved.mode === "started") {
-        setAuditMsg("Download started… Check My Files → Download.");
-        return;
-      }
       setAuditMsg(
         saved.path.includes("\\") || saved.path.includes("/")
           ? `Cropped area report (${format.toUpperCase()}) saved — page ${area.page} only:\n${saved.path}`
@@ -693,10 +689,6 @@ export default function InspectionPage() {
       const label = kind === "ballooned" ? "Ballooned PDF" : "Input file";
       if (saved.mode === "tap") {
         setAuditMsg("Tap Save. The file downloads to My Files → Download.");
-        return filename;
-      }
-      if (saved.mode === "started") {
-        setAuditMsg(`${label} download started… Check My Files → Download.`);
         return filename;
       }
       setAuditMsg(
@@ -2428,12 +2420,8 @@ function ReportPanel({
       setRowsDirty(false);
       setReportDirty(false);
       if (typeof saved !== "string") {
-        if (saved.tablet === "needs-tap") onTabletTap({ url: saved.url, filename: saved.filename });
-        setMsg(
-          saved.tablet === "started"
-            ? "Download started… Check My Files → Download."
-            : "Tap Save. The file downloads to My Files → Download.",
-        );
+        onTabletTap({ url: saved.url, filename: saved.filename });
+        setMsg("Tap Save. The file downloads to My Files → Download.");
         return;
       }
       setMsg(
