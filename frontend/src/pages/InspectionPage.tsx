@@ -506,39 +506,6 @@ export default function InspectionPage() {
       setUploading(false);
     }
   };
-  const onScanReport = async (file: File | null) => {
-    if (!file) return;
-    setUploading(true);
-    setErr("");
-    setAuditMsg("Reading scanned inspection sheet…");
-    if (!jobId) {
-      clearJob();
-      setJob(null);
-      setJobId(null);
-      balloonsRef.current = [];
-      setMissing([]);
-      setSelected(null);
-      setMode("view");
-      setViewPage(0);
-      setPreviewRev(0);
-      undoStackRef.current = [];
-      setUndoCount(0);
-    }
-    try {
-      const res = await api.uploadScannedReport(file, jobId);
-      setJobSession(res.job_id);
-      setJobId(res.job_id);
-      await refresh(res.job_id, { bumpPreview: true });
-      setShowReport(true);
-      setAuditMsg(res.message || "Scan read. Review the report, then save it.");
-    } catch (e: any) {
-      setErr(e.message);
-      setAuditMsg("");
-    } finally {
-      setUploading(false);
-    }
-  };
-
   const onBalloon = async () => {
     if (!jobId) return;
     const modeLabel =
@@ -1191,18 +1158,6 @@ export default function InspectionPage() {
             }}
           />
           {uploading && <span className="muted" style={{ display: "block", marginTop: 6 }}>Uploading…</span>}
-        </div>
-        <div className="field" style={{ margin: 0, minWidth: 260 }}>
-          <label>Upload scanned inspection sheet</label>
-          <input
-            type="file"
-            accept="application/pdf,.pdf,image/png,image/jpeg,image/webp,image/tiff,image/bmp,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp"
-            disabled={uploading || busy}
-            onChange={(e) => {
-              void onScanReport(e.target.files?.[0] || null);
-              e.target.value = "";
-            }}
-          />
         </div>
         <label
           className="balloon-no-field numbering-mode-field"
@@ -2613,14 +2568,6 @@ function ReportPanel({
                 e.target.value = "";
               }}
             />
-            <button
-              className="btn btn-gold btn-sm"
-              disabled={busy}
-              onClick={() => scanFileRef.current?.click()}
-              title="Upload a filled inspection report as PDF or image. Instrument and measured values are read into matching balloon rows."
-            >
-              Upload filled report
-            </button>
             <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => void extractTitle()} title="Read title block / drawing labels into empty report fields">
               Extract from drawing
             </button>
