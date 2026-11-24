@@ -72,6 +72,11 @@ public class DeviceBridge {
         activity.saveBase64File(base64, name, mime);
     }
 
+    @JavascriptInterface
+    public void savePdf(String base64, String name) {
+        activity.saveBase64File(base64, name, "application/pdf");
+    }
+
     private String readSerial() {
         String serial = systemProperty("ro.serialno");
         if (serial.isEmpty()) serial = systemProperty("ril.serialnumber");

@@ -65,6 +65,7 @@ public class MainActivity extends Activity {
         cookies.setAcceptThirdPartyCookies(webView, true);
 
         DeviceBridge bridge = new DeviceBridge(this);
+        webView.addJavascriptInterface(bridge, "AndroidBridge");
         webView.addJavascriptInterface(bridge, "IEDevice");
         webView.addJavascriptInterface(bridge, "Android");
         webView.addJavascriptInterface(bridge, "SmorxDevice");

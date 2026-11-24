@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import {
   api,
-  deliverTabletUrl,
+  saveTabletBytes,
   isTabletDownload,
   measureStatus,
   openTabletUrl,
@@ -607,7 +607,9 @@ export default function InspectionPage() {
     if (!jobId) throw new Error("No job loaded — upload a drawing first.");
     if (isTabletDownload()) {
       const file = await api.tabletExport(jobId, kind, filename, filter);
-      if (deliverTabletUrl(file.url) === "started") return { mode: "started" as const };
+      const savedMode = await saveTabletBytes(file.url, file.filename);
+      if (savedMode === "saved") return { mode: "saved" as const, path: "My Files → Download" };
+      if (savedMode === "started") return { mode: "started" as const };
       setTabletSave(file);
       return { mode: "tap" as const };
     }
@@ -1665,7 +1667,13 @@ export default function InspectionPage() {
                 type="button"
                 className="btn"
                 onClick={() => {
-                  openTabletUrl(tabletSave.url);
+                  void saveTabletBytes(tabletSave.url, tabletSave.filename).then((mode) => {
+                    if (mode === "needs-tap") openTabletUrl(tabletSave.url);
+                    setTabletSave(null);
+                    setAuditMsg("Saved. Open My Files → Download.");
+                  }).catch((ex: unknown) => {
+                    setErr(ex instanceof Error ? ex.message : "Could not save the file");
+                  });
                 }}
               >
                 Save {tabletSave.filename}

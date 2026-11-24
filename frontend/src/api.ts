@@ -75,16 +75,60 @@ export function isTabletDownload(): boolean {
   return touch && coarse && noHover;
 }
 
-type DownloadBridge = { downloadUrl?: (url: string) => void };
+type DownloadBridge = {
+  downloadUrl?: (url: string) => void;
+  saveFile?: (base64: string, name: string, mime: string) => void;
+  savePdf?: (base64: string, name: string) => void;
+};
 
 function deviceBridge(): DownloadBridge | null {
   const w = window as Window & {
+    AndroidBridge?: DownloadBridge;
     IEDevice?: DownloadBridge;
     Android?: DownloadBridge;
     IEAndroid?: DownloadBridge;
     SmorxDevice?: DownloadBridge;
   };
-  return w.IEDevice || w.Android || w.IEAndroid || w.SmorxDevice || null;
+  return w.AndroidBridge || w.IEDevice || w.Android || w.IEAndroid || w.SmorxDevice || null;
+}
+
+function mimeForName(filename: string): string {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (lower.endsWith(".csv")) return "text/csv";
+  if (lower.endsWith(".json")) return "application/json";
+  return "application/octet-stream";
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const raw = String(reader.result || "");
+      resolve(raw.includes(",") ? raw.split(",")[1] : raw);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Could not read the file"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Hand the file bytes to the APK. Android writes them into My Files → Download. */
+export async function saveTabletBytes(url: string, filename: string): Promise<"saved" | "started" | "needs-tap"> {
+  const bridge = deviceBridge();
+  if (bridge && (typeof bridge.saveFile === "function" || typeof bridge.savePdf === "function")) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Could not build the file (${res.status})`);
+    const base64 = await blobToBase64(await res.blob());
+    if (typeof bridge.saveFile === "function") bridge.saveFile(base64, filename, mimeForName(filename));
+    else bridge.savePdf!(base64, filename);
+    return "saved";
+  }
+  if (bridge && typeof bridge.downloadUrl === "function") {
+    bridge.downloadUrl(url);
+    return "started";
+  }
+  return "needs-tap";
 }
 
 /** Native tablet app can save immediately. A browser still needs a second tap with no await before it. */
@@ -702,7 +746,7 @@ export const api = {
     await new Promise((r) => setTimeout(r, 40));
     if (isTabletDownload()) {
       const file = await api.tabletExport(jobId, "pdf", filename, opts?.filter);
-      return { tablet: deliverTabletUrl(file.url), url: file.url, filename: file.filename };
+      return { tablet: await saveTabletBytes(file.url, file.filename), url: file.url, filename: file.filename };
     }
     return api.downloadFile(api.downloadReportPdf(jobId, opts?.filter), filename);
   },
