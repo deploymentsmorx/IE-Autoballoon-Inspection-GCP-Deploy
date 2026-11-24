@@ -27,6 +27,22 @@ const API_CANDIDATES = Array.from(
     ].filter((b) => b !== undefined && b !== null && (b === "" || Boolean(b)))));
 let API = API_CANDIDATES[0] || "http://127.0.0.1:9686";
 
+/** Hosted tablet/browser uses this website, and nginx forwards /api to the API. */
+function useSameOriginApi(): boolean {
+  if (typeof window === "undefined") return false;
+  const host = window.location.hostname;
+  return Boolean(host) && !/^(localhost|127\.0\.0\.1)$/i.test(host);
+}
+
+if (useSameOriginApi()) {
+  API = "";
+  try {
+    localStorage.removeItem(API_BASE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Point this client at the Auto Balloon PC (empty = same host / dev proxy). */
 export function setApiBaseOverride(url: string) {
   const clean = url.trim().replace(/\/$/, "");
@@ -122,7 +138,7 @@ async function fetchApi(path: string, init: RequestInit = {}): Promise<Response>
   // (e.g. a dev server left running on :9686) while later requests went back to
   // the cloud — splitting one job's requests across two different backends/job stores.
   // Never hop backends once logged in — tokens are signed per-server (JWT secret).
-  const tryOrder = authToken()
+  const tryOrder = useSameOriginApi() || authToken()
     ? [API]
     : [API, ...API_CANDIDATES.filter((b) => b !== API)];
   let lastErr: unknown = null;
