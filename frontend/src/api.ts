@@ -52,7 +52,11 @@ function authHeaders(): HeadersInit {
 export function isTabletDownload(): boolean {
   if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent || "";
-  return /Android/i.test(ua) || /iPhone|iPad|iPod/i.test(ua) || /\bwv\b/i.test(ua);
+  if (/Android|iPhone|iPad|iPod|Mobile|Tablet|Silk|Kindle|\bwv\b|SM-T|SM-P|Samsung/i.test(ua)) return true;
+  const touch = navigator.maxTouchPoints > 1;
+  const coarse = window.matchMedia?.("(pointer: coarse)")?.matches ?? false;
+  const noHover = window.matchMedia?.("(hover: none)")?.matches ?? false;
+  return touch && coarse && noHover;
 }
 
 type DownloadBridge = { downloadUrl?: (url: string) => void };

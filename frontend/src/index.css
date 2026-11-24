@@ -447,6 +447,17 @@ input, select, button, textarea { font: inherit; }
   width: min(96vw, 1480px);
   padding: 18px 20px 22px;
 }
+.report-back-bar {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: -8px 0 12px;
+  padding: 8px 0;
+  background: var(--card);
+}
 .report-title-block {
   display: grid;
   grid-template-columns: 1fr 2fr;

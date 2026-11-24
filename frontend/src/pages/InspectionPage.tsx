@@ -62,6 +62,29 @@ export default function InspectionPage() {
   const [previewRev, setPreviewRev] = useState(0);
   const [undoCount, setUndoCount] = useState(0);
   const [showReport, setShowReport] = useState(false);
+  const reportFromHistory = useRef(false);
+
+  useEffect(() => {
+    if (!showReport) return;
+    window.history.pushState({ ieReport: 1 }, "");
+    reportFromHistory.current = true;
+    const onPop = () => {
+      reportFromHistory.current = false;
+      setShowReport(false);
+      setErr("");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [showReport]);
+
+  const closeReport = () => {
+    setErr("");
+    if (reportFromHistory.current) {
+      reportFromHistory.current = false;
+      window.history.back();
+    }
+    setShowReport(false);
+  };
   const [missing, setMissing] = useState<MissingDim[]>([]);
   const [auditMsg, setAuditMsg] = useState("");
   const [tabletSave, setTabletSave] = useState<{ url: string; filename: string } | null>(null);
@@ -729,8 +752,7 @@ export default function InspectionPage() {
 
   const openReport = async () => {
     if (showReport) {
-      setShowReport(false);
-      setErr("");
+      closeReport();
       return;
     }
     if (!jobId) {
@@ -1147,7 +1169,7 @@ export default function InspectionPage() {
             Log out
           </button>
           <button className="btn btn-gold btn-sm" onClick={() => void openReport()}>
-            {showReport ? "Close report" : "Inspection report"}
+            {showReport ? "Back" : "Inspection report"}
           </button>
           <Link className="btn btn-ghost btn-sm" to="/app">
             Go to Dashboard
@@ -1666,10 +1688,7 @@ export default function InspectionPage() {
           jobId={jobId}
           workArea={areaForReport()}
           defaultPage={viewPage + 1}
-          onClose={() => {
-            setShowReport(false);
-            setErr("");
-          }}
+          onClose={closeReport}
           onSaved={async () => {
             await refresh(jobId);
           }}
@@ -2563,6 +2582,12 @@ function ReportPanel({
   return (
     <div className="report-modal-backdrop" onClick={onClose}>
       <div className="report-modal report-modal-desktop" onClick={(e) => e.stopPropagation()}>
+        <div className="report-back-bar">
+          <button type="button" className="btn btn-primary" onClick={onClose}>
+            Back
+          </button>
+          <strong>Inspection Report</strong>
+        </div>
         <div className="row-between mb">
           <div>
             <h2 style={{ margin: 0 }}>Inspection Report</h2>
