@@ -13,6 +13,7 @@ import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
 import android.webkit.URLUtil;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.widget.Toast;
 
@@ -27,6 +28,8 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
 public class MainActivity extends BridgeActivity {
+    private boolean freshLoad;
+
     @Override
     public void onStart() {
         super.onStart();
@@ -50,6 +53,15 @@ public class MainActivity extends BridgeActivity {
     private void attachDeviceBridge() {
         WebView webView = getBridge() != null ? getBridge().getWebView() : null;
         if (webView != null) {
+            webView.getSettings().setCacheMode(WebSettings.LOAD_NO_CACHE);
+            if (!freshLoad) {
+                freshLoad = true;
+                webView.clearCache(true);
+                webView.postDelayed(() -> webView.evaluateJavascript(
+                        "(function(){if(!navigator.serviceWorker)return;navigator.serviceWorker.getRegistrations().then(function(rs){rs.forEach(function(r){r.unregister()});if(rs.length)location.reload();});})()",
+                        null
+                ), 600);
+            }
             webView.addJavascriptInterface(new TabletDevice(this), "SmorxDevice");
             webView.setDownloadListener(new DownloadListener() {
                 @Override

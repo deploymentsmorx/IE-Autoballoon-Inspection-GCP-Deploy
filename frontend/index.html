@@ -10,6 +10,13 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/smorx-icon.png" />
     <title>AutoBalloon &amp; Inspection Software System</title>
+    <script>
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function (regs) {
+          regs.forEach(function (reg) { reg.unregister(); });
+        });
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>
