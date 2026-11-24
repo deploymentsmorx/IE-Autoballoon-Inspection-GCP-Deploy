@@ -21,7 +21,6 @@ export function clearTabletClient(): void {
 
 export type NativeTablet = {
   model: string;
-  imei: string;
   serial: string;
   device_id: string;
   hostname: string;
@@ -35,14 +34,12 @@ export function readNativeTablet(): NativeTablet | null {
   try {
     const raw = bridge.getDeviceInfo();
     const info = JSON.parse(raw) as NativeTablet;
-    const imei = (info.imei || "").replace(/\D/g, "");
     const serial = (info.serial || "").trim();
-    const deviceId = (imei || serial || info.device_id || "").trim();
+    const deviceId = (serial || info.device_id || "").trim();
     if (!deviceId) return null;
     return {
       model: (info.model || "").trim(),
-      imei,
-      serial,
+      serial: serial || deviceId,
       device_id: deviceId,
       hostname: (info.hostname || info.model || "Android tablet").trim(),
     };

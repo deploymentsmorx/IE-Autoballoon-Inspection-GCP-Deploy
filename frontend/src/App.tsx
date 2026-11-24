@@ -25,14 +25,14 @@ function TabletCheckInBoot() {
       const native = readNativeTablet();
       if (native) {
         markTabletClient();
-        const key = `${native.device_id}|${native.imei}`;
+        const key = native.device_id;
         if (key !== sent) {
           sent = key;
           void api
-            .checkInTablet(native.device_id, native.hostname, "", native.model, native.imei, native.serial)
+            .checkInTablet(native.device_id, native.hostname, "", native.model, "", native.serial)
             .catch(() => {});
         }
-        if (native.imei || tries > 40) window.clearInterval(timer);
+        window.clearInterval(timer);
       } else if (tries > 40) {
         window.clearInterval(timer);
       }

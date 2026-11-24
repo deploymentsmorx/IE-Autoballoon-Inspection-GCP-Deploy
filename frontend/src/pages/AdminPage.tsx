@@ -43,7 +43,6 @@ export default function AdminPage() {
   const [addPass, setAddPass] = useState("");
   const [addModel, setAddModel] = useState("");
   const [addSerial, setAddSerial] = useState("");
-  const [addImei, setAddImei] = useState("");
   const [installs, setInstalls] = useState<Installation[]>([]);
 
   const [companyName, setCompanyName] = useState("");
@@ -469,7 +468,7 @@ export default function AdminPage() {
           <div className="section">
             <h2>Factory tablets</h2>
             <p className="muted">
-              Give the APK to the client. When they open it, model, serial and IMEI appear in the list. Type the name, username and password, then Approve. You can also add a tablet here with those same details.
+              Give the APK to the client. When they open it, the model and serial number appear in the list. Type the name, username and password, then Approve. You can also add a tablet here with those same details.
             </p>
             <div className="row mt" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: 8 }}>
               <div className="field" style={{ margin: 0, minWidth: 140, flex: 1 }}>
@@ -492,10 +491,6 @@ export default function AdminPage() {
                 <label>Serial number</label>
                 <input value={addSerial} onChange={(e) => setAddSerial(e.target.value)} placeholder="R52N..." />
               </div>
-              <div className="field" style={{ margin: 0, minWidth: 160, flex: 1 }}>
-                <label>IMEI</label>
-                <input value={addImei} onChange={(e) => setAddImei(e.target.value)} placeholder="15 digit IMEI" />
-              </div>
               <button
                 className="btn btn-primary"
                 style={{ width: "auto" }}
@@ -505,8 +500,8 @@ export default function AdminPage() {
                     setErr("Enter name, username and password.");
                     return;
                   }
-                  if (!addImei.trim() && !addSerial.trim()) {
-                    setErr("Enter the IMEI or the serial number from the tablet.");
+                  if (!addSerial.trim()) {
+                    setErr("Enter the serial number from the tablet.");
                     return;
                   }
                   setBusy(true);
@@ -518,7 +513,6 @@ export default function AdminPage() {
                       password: addPass,
                       model: addModel.trim(),
                       serial: addSerial.trim(),
-                      imei: addImei.trim(),
                     })
                     .then(() => {
                       setAddName("");
@@ -526,7 +520,6 @@ export default function AdminPage() {
                       setAddPass("");
                       setAddModel("");
                       setAddSerial("");
-                      setAddImei("");
                       setMsg(`Tablet added. The client signs in as ${addUser.trim()}.`);
                       return loadLists();
                     })
@@ -544,7 +537,6 @@ export default function AdminPage() {
                 <tr>
                   <th>Model</th>
                   <th>Serial number</th>
-                  <th>IMEI</th>
                   <th>Name</th>
                   <th>Username</th>
                   <th>Password</th>
@@ -556,8 +548,7 @@ export default function AdminPage() {
                 {tablets.map((t) => (
                   <tr key={t.device_id}>
                     <td>{t.model || "—"}</td>
-                    <td><code>{t.serial || "—"}</code></td>
-                    <td><code>{t.imei || "—"}</code></td>
+                    <td><code>{t.serial || t.device_id || "—"}</code></td>
                     <td>
                       {t.status === "approved" ? (
                         t.label || "—"
@@ -653,7 +644,7 @@ export default function AdminPage() {
                 ))}
                 {!tablets.length && (
                   <tr>
-                    <td colSpan={8} className="muted">
+                    <td colSpan={7} className="muted">
                       No tablet yet. Add one above, or open the APK at the client site.
                     </td>
                   </tr>

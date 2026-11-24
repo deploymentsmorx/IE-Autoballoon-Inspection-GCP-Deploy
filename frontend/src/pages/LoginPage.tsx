@@ -110,7 +110,6 @@ export default function LoginPage() {
             <div className="muted mb" style={{ fontSize: "0.9rem" }}>
               <div>Model: <strong>{native.model || "—"}</strong></div>
               <div>Serial: <strong>{native.serial || "—"}</strong></div>
-              <div>IMEI: <strong>{native.imei || "—"}</strong></div>
               <div>These are sent to admin. After approval, sign in with the username and password from admin.</div>
             </div>
           );

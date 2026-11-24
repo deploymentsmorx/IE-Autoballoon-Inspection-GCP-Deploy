@@ -42,7 +42,7 @@ def normalize_device_id(device_id: str) -> str:
     if not _DEVICE_RE.match(device_id):
         raise HTTPException(
             status_code=400,
-            detail="Device ID must be the tablet IMEI.",
+            detail="Device ID must be the tablet serial number.",
         )
     return device_id
 
@@ -71,9 +71,9 @@ def check_in(
     imei: str = "",
     serial: str = "",
 ) -> dict:
-    imei = _digits(imei)
+    imei = ""
     serial = (serial or "").strip().upper()
-    device_id = normalize_device_id(imei or serial or device_id)
+    device_id = normalize_device_id(serial or device_id)
     hostname = (hostname or model or "Android tablet").strip()
     label = (label or "").strip()
     model = (model or hostname).strip()
@@ -129,13 +129,13 @@ def add_with_account(name: str, model: str, serial: str, imei: str, username: st
     name = (name or "").strip()
     model = (model or "").strip()
     serial = (serial or "").strip().upper()
-    imei = _digits(imei)
+    imei = ""
     username = (username or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Enter the person's name")
-    if not imei and not serial:
-        raise HTTPException(status_code=400, detail="Enter the IMEI or the serial number from the tablet")
-    device_id = normalize_device_id(imei or serial)
+    if not serial:
+        raise HTTPException(status_code=400, detail="Enter the serial number from the tablet")
+    device_id = normalize_device_id(serial)
     now = _now()
     with _LOCK:
         data = _load()
