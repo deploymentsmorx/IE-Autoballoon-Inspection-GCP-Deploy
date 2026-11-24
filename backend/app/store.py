@@ -140,6 +140,74 @@ def list_engineers() -> list[dict]:
     ]
 
 
+def create_tablet_login(full_name: str, username: str, password: str) -> dict:
+    """Login for a factory tablet. Active immediately, no password-change prompt."""
+    full_name = (full_name or "").strip()
+    username = (username or "").strip()
+    password = password or ""
+    if len(full_name) < 2:
+        raise HTTPException(status_code=400, detail="Enter the person's name")
+    if len(username) < 3 or len(username) > 40:
+        raise HTTPException(status_code=400, detail="Username must be 3 to 40 characters")
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    email = f"{username.lower()}@tablet.local"
+    if dbmod.USE_POSTGRES and dbmod.SessionLocal is not None:
+        with dbmod.SessionLocal() as db:
+            taken = db.scalar(
+                select(User).where(or_(User.username == username, User.email == email))
+            )
+            if taken:
+                raise HTTPException(status_code=400, detail="That username is already used")
+            org = db.scalar(select(Organization).where(Organization.name == "Factory tablets"))
+            if org is None:
+                oid = f"org-{secrets.token_hex(4)}"
+                org = Organization(id=oid, name="Factory tablets", tenant_id=oid.upper(), status="Active")
+                db.add(org)
+                db.flush()
+            user = User(
+                id=f"u-{secrets.token_hex(4)}",
+                username=username,
+                email=email,
+                full_name=full_name,
+                password_hash=hash_password(password),
+                role="engineer",
+                org_id=org.id,
+                active=True,
+                perm_read=True,
+                perm_write=True,
+                perm_delete=False,
+                must_change_password=False,
+            )
+            db.add(user)
+            db.commit()
+            return {"id": user.id, "username": username, "full_name": full_name}
+    db = local_store.load()
+    if any(u["username"].lower() == username.lower() or u["email"].lower() == email for u in db["users"]):
+        raise HTTPException(status_code=400, detail="That username is already used")
+    org = next((o for o in db["organizations"] if o.get("name") == "Factory tablets"), None)
+    if org is None:
+        oid = f"org-{secrets.token_hex(4)}"
+        org = {"id": oid, "name": "Factory tablets", "tenant_id": oid.upper(), "status": "Active", "trial_ends": None}
+        db["organizations"].append(org)
+    user = {
+        "id": f"u-{secrets.token_hex(4)}",
+        "username": username,
+        "email": email,
+        "full_name": full_name,
+        "password_hash": hash_password(password),
+        "role": "engineer",
+        "org_id": org["id"],
+        "customer_id": None,
+        "active": True,
+        "permissions": {"read": True, "write": True, "delete": False},
+        "must_change_password": False,
+    }
+    db["users"].append(user)
+    local_store.save(db)
+    return {"id": user["id"], "username": username, "full_name": full_name}
+
+
 def add_engineer(
     full_name: str,
     email: str,

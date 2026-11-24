@@ -36,6 +36,14 @@ export default function AdminPage() {
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [tablets, setTablets] = useState<TabletRecord[]>([]);
   const [tabletNames, setTabletNames] = useState<Record<string, string>>({});
+  const [tabletUsers, setTabletUsers] = useState<Record<string, string>>({});
+  const [tabletPasses, setTabletPasses] = useState<Record<string, string>>({});
+  const [addName, setAddName] = useState("");
+  const [addUser, setAddUser] = useState("");
+  const [addPass, setAddPass] = useState("");
+  const [addModel, setAddModel] = useState("");
+  const [addSerial, setAddSerial] = useState("");
+  const [addImei, setAddImei] = useState("");
   const [installs, setInstalls] = useState<Installation[]>([]);
 
   const [companyName, setCompanyName] = useState("");
@@ -461,29 +469,98 @@ export default function AdminPage() {
           <div className="section">
             <h2>Factory tablets</h2>
             <p className="muted">
-              Open the Auto ballooning software app on the tablet. Allow the phone permission if Android asks. The model and IMEI appear here. Type the person’s name, then Approve.
+              Give the APK to the client. When they open it, model, serial and IMEI appear in the list. Type the name, username and password, then Approve. You can also add a tablet here with those same details.
             </p>
+            <div className="row mt" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: 8 }}>
+              <div className="field" style={{ margin: 0, minWidth: 140, flex: 1 }}>
+                <label>Name</label>
+                <input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="Sagar" />
+              </div>
+              <div className="field" style={{ margin: 0, minWidth: 140, flex: 1 }}>
+                <label>Username</label>
+                <input value={addUser} onChange={(e) => setAddUser(e.target.value)} placeholder="sagar" autoCapitalize="off" />
+              </div>
+              <div className="field" style={{ margin: 0, minWidth: 140, flex: 1 }}>
+                <label>Password</label>
+                <input type="text" value={addPass} onChange={(e) => setAddPass(e.target.value)} placeholder="password" />
+              </div>
+              <div className="field" style={{ margin: 0, minWidth: 140, flex: 1 }}>
+                <label>Model</label>
+                <input value={addModel} onChange={(e) => setAddModel(e.target.value)} placeholder="SM-T500" />
+              </div>
+              <div className="field" style={{ margin: 0, minWidth: 140, flex: 1 }}>
+                <label>Serial number</label>
+                <input value={addSerial} onChange={(e) => setAddSerial(e.target.value)} placeholder="R52N..." />
+              </div>
+              <div className="field" style={{ margin: 0, minWidth: 160, flex: 1 }}>
+                <label>IMEI</label>
+                <input value={addImei} onChange={(e) => setAddImei(e.target.value)} placeholder="15 digit IMEI" />
+              </div>
+              <button
+                className="btn btn-primary"
+                style={{ width: "auto" }}
+                disabled={busy}
+                onClick={() => {
+                  if (!addName.trim() || !addUser.trim() || !addPass.trim()) {
+                    setErr("Enter name, username and password.");
+                    return;
+                  }
+                  if (!addImei.trim() && !addSerial.trim()) {
+                    setErr("Enter the IMEI or the serial number from the tablet.");
+                    return;
+                  }
+                  setBusy(true);
+                  setErr("");
+                  void api
+                    .addTablet({
+                      name: addName.trim(),
+                      username: addUser.trim(),
+                      password: addPass,
+                      model: addModel.trim(),
+                      serial: addSerial.trim(),
+                      imei: addImei.trim(),
+                    })
+                    .then(() => {
+                      setAddName("");
+                      setAddUser("");
+                      setAddPass("");
+                      setAddModel("");
+                      setAddSerial("");
+                      setAddImei("");
+                      setMsg(`Tablet added. The client signs in as ${addUser.trim()}.`);
+                      return loadLists();
+                    })
+                    .catch((ex: unknown) => {
+                      setErr(ex instanceof Error ? ex.message : "Could not add tablet");
+                    })
+                    .finally(() => setBusy(false));
+                }}
+              >
+                Add tablet
+              </button>
+            </div>
             <table className="table mt">
               <thead>
                 <tr>
                   <th>Model</th>
+                  <th>Serial number</th>
                   <th>IMEI</th>
                   <th>Name</th>
+                  <th>Username</th>
+                  <th>Password</th>
                   <th>Status</th>
-                  <th>Last seen</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
                 {tablets.map((t) => (
                   <tr key={t.device_id}>
-                    <td>{t.model || t.hostname || "—"}</td>
-                    <td>
-                      <code>{t.imei || t.serial || t.device_id}</code>
-                    </td>
+                    <td>{t.model || "—"}</td>
+                    <td><code>{t.serial || "—"}</code></td>
+                    <td><code>{t.imei || "—"}</code></td>
                     <td>
                       {t.status === "approved" ? (
-                        t.label || t.hostname
+                        t.label || "—"
                       ) : (
                         <input
                           value={tabletNames[t.device_id] ?? t.label ?? ""}
@@ -494,19 +571,48 @@ export default function AdminPage() {
                         />
                       )}
                     </td>
+                    <td>
+                      {t.status === "approved" ? (
+                        t.username || "—"
+                      ) : (
+                        <input
+                          value={tabletUsers[t.device_id] ?? ""}
+                          placeholder="sagar"
+                          autoCapitalize="off"
+                          onChange={(e) =>
+                            setTabletUsers((current) => ({ ...current, [t.device_id]: e.target.value }))
+                          }
+                        />
+                      )}
+                    </td>
+                    <td>
+                      {t.status === "approved" ? (
+                        "Set"
+                      ) : (
+                        <input
+                          type="text"
+                          value={tabletPasses[t.device_id] ?? ""}
+                          placeholder="password"
+                          onChange={(e) =>
+                            setTabletPasses((current) => ({ ...current, [t.device_id]: e.target.value }))
+                          }
+                        />
+                      )}
+                    </td>
                     <td>{t.status}</td>
-                    <td>{t.last_seen ? new Date(t.last_seen).toLocaleString() : "—"}</td>
                     <td style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                       {t.status !== "approved" && (
                         <button
                           className="btn btn-outline btn-sm"
                           onClick={() => {
                             const name = (tabletNames[t.device_id] ?? t.label ?? "").trim();
-                            if (!name) {
-                              setErr("Type a name for this tablet, then Approve.");
+                            const username = (tabletUsers[t.device_id] ?? "").trim();
+                            const password = tabletPasses[t.device_id] ?? "";
+                            if (!name || !username || !password) {
+                              setErr("Type the name, username and password, then Approve.");
                               return;
                             }
-                            void api.approveTablet(t.device_id, name).then(() => loadLists()).catch((ex: unknown) => {
+                            void api.approveTablet(t.device_id, { name, username, password }).then(() => loadLists()).catch((ex: unknown) => {
                               setErr(ex instanceof Error ? ex.message : "Could not approve tablet");
                             });
                           }}
@@ -531,7 +637,7 @@ export default function AdminPage() {
                         style={{ width: "auto", color: "#b42318" }}
                         onClick={() => {
                           const label = t.label || t.hostname || t.device_id;
-                          if (!window.confirm(`Delete tablet ${label}? It must register again from InspectionTablet.exe.`)) return;
+                          if (!window.confirm(`Delete tablet ${label}? The client must open the app again.`)) return;
                           void api
                             .removeTablet(t.device_id)
                             .then(() => loadLists())
@@ -547,8 +653,8 @@ export default function AdminPage() {
                 ))}
                 {!tablets.length && (
                   <tr>
-                    <td colSpan={6} className="muted">
-                      No tablets have checked in yet
+                    <td colSpan={8} className="muted">
+                      No tablet yet. Add one above, or open the APK at the client site.
                     </td>
                   </tr>
                 )}

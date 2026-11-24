@@ -12,6 +12,7 @@ list_orgs = _store.list_orgs
 create_org = _store.create_org
 list_engineers = _store.list_engineers
 add_engineer = _store.add_engineer
+create_tablet_login = _store.create_tablet_login
 update_access = _store.update_access
 grant_full = _store.grant_full
 change_password = _store.change_password

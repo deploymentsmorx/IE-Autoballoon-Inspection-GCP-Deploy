@@ -47,18 +47,42 @@ def normalize_device_id(device_id: str) -> str:
     return device_id
 
 
-def check_in(device_id: str, hostname: str, label: str = "", model: str = "", imei: str = "") -> dict:
-    device_id = normalize_device_id(device_id)
+def _digits(value: str) -> str:
+    return "".join(ch for ch in (value or "") if ch.isdigit())[:20]
+
+
+def _find_row(rows: list[dict], device_id: str, imei: str, serial: str) -> dict | None:
+    for row in rows:
+        keys = {str(row.get("device_id") or ""), str(row.get("imei") or ""), str(row.get("serial") or "")}
+        if device_id and device_id in keys:
+            return row
+        if imei and imei in keys:
+            return row
+        if serial and serial in keys:
+            return row
+    return None
+
+
+def check_in(
+    device_id: str,
+    hostname: str,
+    label: str = "",
+    model: str = "",
+    imei: str = "",
+    serial: str = "",
+) -> dict:
+    imei = _digits(imei)
+    serial = (serial or "").strip().upper()
+    device_id = normalize_device_id(imei or serial or device_id)
     hostname = (hostname or model or "Android tablet").strip()
     label = (label or "").strip()
     model = (model or hostname).strip()
-    imei = "".join(ch for ch in (imei or "") if ch.isdigit())[:20]
     if len(hostname) > 80 or len(label) > 80 or len(model) > 80:
         raise HTTPException(status_code=400, detail="Tablet name is too long")
     with _LOCK:
         data = _load()
         rows: list[dict] = data["tablets"]
-        row = next((r for r in rows if r.get("device_id") == device_id), None)
+        row = _find_row(rows, device_id, imei, serial)
         now = _now()
         if row is None:
             row = {
@@ -67,7 +91,8 @@ def check_in(device_id: str, hostname: str, label: str = "", model: str = "", im
                 "label": label,
                 "model": model,
                 "imei": imei,
-                "serial": device_id,
+                "serial": serial or device_id,
+                "username": "",
                 "status": "pending",
                 "first_seen": now,
                 "last_seen": now,
@@ -78,7 +103,7 @@ def check_in(device_id: str, hostname: str, label: str = "", model: str = "", im
             row["hostname"] = hostname or row.get("hostname")
             row["model"] = model or row.get("model") or ""
             row["imei"] = imei or row.get("imei") or ""
-            row["serial"] = device_id
+            row["serial"] = serial or row.get("serial") or ""
             row["last_seen"] = now
             if label:
                 row["label"] = label
@@ -89,13 +114,69 @@ def check_in(device_id: str, hostname: str, label: str = "", model: str = "", im
 
 
 def get_status(device_id: str) -> dict:
+    raw = (device_id or "").strip().upper()
+    imei = _digits(device_id)
+    device_id = normalize_device_id(raw)
+    with _LOCK:
+        data = _load()
+        row = _find_row(data["tablets"], device_id, imei, raw)
+    if row is None:
+        return {"device_id": device_id, "status": "unknown", "hostname": "", "label": ""}
+    return dict(row)
+
+
+def add_with_account(name: str, model: str, serial: str, imei: str, username: str) -> dict:
+    name = (name or "").strip()
+    model = (model or "").strip()
+    serial = (serial or "").strip().upper()
+    imei = _digits(imei)
+    username = (username or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Enter the person's name")
+    if not imei and not serial:
+        raise HTTPException(status_code=400, detail="Enter the IMEI or the serial number from the tablet")
+    device_id = normalize_device_id(imei or serial)
+    now = _now()
+    with _LOCK:
+        data = _load()
+        rows: list[dict] = data["tablets"]
+        row = _find_row(rows, device_id, imei, serial)
+        if row is None:
+            row = {
+                "device_id": device_id,
+                "hostname": model or name,
+                "label": name,
+                "model": model,
+                "imei": imei,
+                "serial": serial,
+                "username": username,
+                "status": "pending",
+                "first_seen": now,
+                "last_seen": now,
+                "approved_at": "",
+            }
+            rows.append(row)
+        else:
+            row["label"] = name
+            row["hostname"] = model or row.get("hostname") or name
+            row["model"] = model or row.get("model") or ""
+            row["imei"] = imei or row.get("imei") or ""
+            row["serial"] = serial or row.get("serial") or ""
+            row["username"] = username
+        _save(data)
+        return dict(row)
+
+
+def set_account(device_id: str, username: str) -> dict:
     device_id = normalize_device_id(device_id)
     with _LOCK:
         data = _load()
         row = next((r for r in data["tablets"] if r.get("device_id") == device_id), None)
-    if row is None:
-        return {"device_id": device_id, "status": "unknown", "hostname": "", "label": ""}
-    return dict(row)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Tablet has not checked in yet")
+        row["username"] = (username or "").strip()
+        _save(data)
+        return dict(row)
 
 
 def add_approved(device_id: str, hostname: str, label: str = "") -> dict:

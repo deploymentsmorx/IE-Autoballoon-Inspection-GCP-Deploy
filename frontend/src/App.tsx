@@ -28,7 +28,9 @@ function TabletCheckInBoot() {
         const key = `${native.device_id}|${native.imei}`;
         if (key !== sent) {
           sent = key;
-          void api.checkInTablet(native.device_id, native.hostname, "", native.model, native.imei).catch(() => {});
+          void api
+            .checkInTablet(native.device_id, native.hostname, "", native.model, native.imei, native.serial)
+            .catch(() => {});
         }
         if (native.imei || tries > 40) window.clearInterval(timer);
       } else if (tries > 40) {

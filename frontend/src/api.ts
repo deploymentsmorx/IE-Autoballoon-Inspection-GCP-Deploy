@@ -318,24 +318,24 @@ export const api = {
     req<{ token: string; user: User }>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password, ...device, tablet_id: tabletId || undefined })}),
-  checkInTablet: (device_id: string, hostname: string, label = "", model = "", imei = "") =>
+  checkInTablet: (device_id: string, hostname: string, label = "", model = "", imei = "", serial = "") =>
     req<TabletRecord>("/api/tablets/check-in", {
       method: "POST",
-      body: JSON.stringify({ device_id, hostname, label, model, imei }),
+      body: JSON.stringify({ device_id, hostname, label, model, imei, serial }),
     }),
   tabletStatus: (deviceId: string) =>
     req<TabletRecord>(`/api/tablets/status?device_id=${encodeURIComponent(deviceId)}`),
   listTablets: () => req<TabletRecord[]>("/api/admin/tablets"),
-  addTablet: (device_id: string, hostname: string, label = hostname) =>
+  addTablet: (body: { name: string; username: string; password: string; model?: string; serial?: string; imei?: string }) =>
     req<TabletRecord>("/api/admin/tablets", {
       method: "POST",
-      body: JSON.stringify({ device_id, hostname, label }),
+      body: JSON.stringify(body),
     }),
-  approveTablet: (deviceId: string, label = "") =>
-    req<TabletRecord>(
-      `/api/admin/tablets/${encodeURIComponent(deviceId)}/approve${label ? `?label=${encodeURIComponent(label)}` : ""}`,
-      { method: "POST" },
-    ),
+  approveTablet: (deviceId: string, body: { name: string; username: string; password: string }) =>
+    req<TabletRecord>(`/api/admin/tablets/${encodeURIComponent(deviceId)}/approve`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   rejectTablet: (deviceId: string) =>
     req<TabletRecord>(`/api/admin/tablets/${encodeURIComponent(deviceId)}/reject`, { method: "POST" }),
   removeTablet: (deviceId: string) =>
@@ -981,6 +981,7 @@ export type TabletRecord = {
   model?: string;
   imei?: string;
   serial?: string;
+  username?: string;
   status: string;
   first_seen?: string;
   last_seen?: string;

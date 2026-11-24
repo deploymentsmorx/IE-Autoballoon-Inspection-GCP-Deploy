@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 import { api } from "../api";
-import { clearLicenseActivation, getDeviceInfo, isDesktopApp, isLicenseActivated, isTabletClient } from "../device";
+import { clearLicenseActivation, getDeviceInfo, isDesktopApp, isLicenseActivated, isTabletClient, readNativeTablet } from "../device";
 import { APP_TITLE, COSTSHEET_ADMIN_PORTAL } from "../constants/branding";
 
 export default function LoginPage() {
@@ -103,6 +103,18 @@ export default function LoginPage() {
             ? "Sign in with your Cost Sheet super-admin account."
             : "Sign in with the email and password provided by your administrator."}
         </p>
+        {(() => {
+          const native = readNativeTablet();
+          if (!native) return null;
+          return (
+            <div className="muted mb" style={{ fontSize: "0.9rem" }}>
+              <div>Model: <strong>{native.model || "—"}</strong></div>
+              <div>Serial: <strong>{native.serial || "—"}</strong></div>
+              <div>IMEI: <strong>{native.imei || "—"}</strong></div>
+              <div>These are sent to admin. After approval, sign in with the username and password from admin.</div>
+            </div>
+          );
+        })()}
         <form onSubmit={onSubmit}>
           <div className="field">
             <label>Email or username</label>
