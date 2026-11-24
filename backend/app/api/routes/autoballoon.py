@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import shutil
+import time
 import zipfile
 from pathlib import Path
 
 import fitz
+import jwt
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 
 from app.api.dependencies import require_perm
-from app.core.config import JOBS, UPLOADS
+from app.core.config import JOBS, UPLOADS, settings
+from app.services import auth_service
 from app.schemas import BalloonDeleteMany, BalloonUpdate, AreaBalloonRequest, ReportPayload, ReportRowsChunk
-from app.services.drawing_versions import version_report_info
 from app.services.master_report import build_master_pdf, build_master_xlsx, ensure_master_fields
 from app.services.report_pdf import (
     build_report_pdf,
@@ -709,8 +713,6 @@ def _draw_balloons_overlay(src_pdf: Path, balloons: list[dict], out_pdf: Path) -
             nb["ty"] = c.ty
             nb["arrow_size"] = c.arrow_size
             updated.append(nb)
-        from app.services.drawing_versions import apply_version_overlay_for_job
-        apply_version_overlay_for_job(out_pdf.parent, src_pdf, out_pdf, updated)
         return updated
     finally:
         doc.close()
@@ -1946,7 +1948,7 @@ def download_report_pdf(
         "authorized_signatory": meta.get("authorized_signatory", ""),
         "rows": rows,
         "measure_columns": meta.get("measure_columns") or default_measure_columns(),
-        "version_highlight": version_report_info(meta),
+        "version_highlight": {},
     }
     try:
         pdf = build_report_pdf(payload)
@@ -1985,7 +1987,7 @@ def save_and_download_report_pdf(
     meta["measure_columns"] = [c.model_dump() for c in body.measure_columns]
     _save_meta_local(job_id, meta)
     payload = body.model_dump()
-    payload["version_highlight"] = version_report_info(meta)
+    payload["version_highlight"] = {}
     jd = _job_dir(job_id)
     out_pdf = jd / "inspection_report.pdf"
     try:
@@ -2044,7 +2046,7 @@ def download_excel(
         "authorized_signatory": meta.get("authorized_signatory", ""),
         "rows": rows,
         "measure_columns": meta.get("measure_columns") or default_measure_columns(),
-        "version_highlight": version_report_info(meta),
+        "version_highlight": {},
     }
     try:
         xlsx = build_report_xlsx(payload)
@@ -2212,3 +2214,120 @@ def download_report_json(
         media_type="application/json",
         filename=f"{job_id}_inspection_report{suffix}.json",
     )
+
+
+# Tablet downloads. Samsung WebView saves a blob as .bin and ignores a download
+# that starts after fetch(). The link path ends in .pdf / .xlsx so the same tap
+# can open it directly, matching the inspection app. The token is signed so
+# every API worker can serve it (in-memory links break when workers > 1).
+_EXPORT_TTL = 600
+_EXPORT_KINDS = {
+    "pdf": "pdf",
+    "excel": "xlsx",
+    "csv": "csv",
+    "json": "json",
+    "ballooned": "pdf",
+    "source": "pdf",
+    "master-pdf": "pdf",
+    "master-excel": "xlsx",
+    "cmq-pdf": "pdf",
+    "cmq-excel": "xlsx",
+}
+
+
+class ExportLinkIn(BaseModel):
+    kind: str
+    filename: str = ""
+    page: int | None = None
+    area_page: int | None = None
+    area_x: float | None = None
+    area_y: float | None = None
+    area_w: float | None = None
+    area_h: float | None = None
+
+
+def _safe_export_name(name: str, ext: str) -> str:
+    base = Path(name or "").name
+    base = re.sub(r"[^\w.\-]+", "_", base).strip("._") or f"download.{ext}"
+    if not base.lower().endswith(f".{ext}"):
+        stem = Path(base).stem or "download"
+        base = f"{stem}.{ext}"
+    return base[:180]
+
+
+def _run_saved_export(entry: dict):
+    job_id = entry["job_id"]
+    user = entry["user"]
+    kind = entry["kind"]
+    filt = dict(
+        page=entry.get("page"),
+        area_page=entry.get("area_page"),
+        area_x=entry.get("area_x"),
+        area_y=entry.get("area_y"),
+        area_w=entry.get("area_w"),
+        area_h=entry.get("area_h"),
+        user=user,
+    )
+    if kind == "pdf":
+        return download_report_pdf(job_id, **filt)
+    if kind == "excel":
+        return download_excel(job_id, **filt)
+    if kind == "csv":
+        return download_report_csv(job_id, **filt)
+    if kind == "json":
+        return download_report_json(job_id, **filt)
+    if kind == "ballooned":
+        return download_ballooned(job_id, user=user)
+    if kind == "source":
+        return download_source(job_id, user=user)
+    template, fmt = kind.split("-", 1)
+    return download_template_report(job_id, template, fmt, **filt)
+
+
+@router.post("/{job_id}/export-link")
+def create_export_link(job_id: str, body: ExportLinkIn, user: dict = Depends(require_perm("read"))):
+    if body.kind not in _EXPORT_KINDS:
+        raise HTTPException(status_code=400, detail="Unknown export type.")
+    _load_meta(job_id)
+    ext = _EXPORT_KINDS[body.kind]
+    filename = _safe_export_name(body.filename, ext)
+    token = jwt.encode(
+        {
+            "purpose": "export",
+            "sub": user.get("id"),
+            "job_id": job_id,
+            "kind": body.kind,
+            "page": body.page,
+            "area_page": body.area_page,
+            "area_x": body.area_x,
+            "area_y": body.area_y,
+            "area_w": body.area_w,
+            "area_h": body.area_h,
+            "exp": int(time.time()) + _EXPORT_TTL,
+        },
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    if isinstance(token, bytes):
+        token = token.decode()
+    return {"path": f"/api/export/{token}/{filename}", "filename": filename, "expires_in": _EXPORT_TTL}
+
+
+export_router = APIRouter(prefix="/api/export", tags=["export"])
+
+
+@export_router.get("/{token}/{filename}")
+def export_by_token(token: str, filename: str):
+    try:
+        data = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except Exception as e:
+        raise HTTPException(status_code=404, detail="This download link expired. Tap Save again.") from e
+    if data.get("purpose") != "export" or data.get("kind") not in _EXPORT_KINDS:
+        raise HTTPException(status_code=404, detail="This download link expired. Tap Save again.")
+    user = auth_service.get_user(data.get("sub"))
+    if not user or (not user.get("active") and user.get("role") != "super_admin"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if user.get("role") != "super_admin" and not (user.get("permissions") or {}).get("read"):
+        raise HTTPException(status_code=403, detail="Missing permission: read")
+    data["user"] = user
+    return _run_saved_export(data)

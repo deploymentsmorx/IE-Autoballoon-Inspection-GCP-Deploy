@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import {
   api,
+  deliverTabletUrl,
+  isTabletDownload,
   measureStatus,
+  openTabletUrl,
   reportFilterSuffix,
   type Balloon,
   type Job,
@@ -12,7 +15,6 @@ import {
   type ReportRow,
   type ScanSuggestion,
 } from "../api";
-import type { DrawingVersionInfo } from "../api";
 import {
   featureTypeFor,
   getActiveRules,
@@ -23,8 +25,6 @@ import {
   type InstrumentSuggestion,
 } from "../constants/instrumentSuggest";
 import InstrumentSettingsPanel from "../components/InstrumentSettingsPanel";
-import { currentHighlightMap, highlightedBalloonNumbers } from "../constants/versionHighlight";
-import "../components/version-highlight.css";
 import { getJobSession, setJobSession, useAuth } from "../auth";
 import BalloonCanvas, { type Mode } from "../components/BalloonCanvas";
 import ZoomImageViewer from "../components/ZoomImageViewer";
@@ -64,6 +64,7 @@ export default function InspectionPage() {
   const [showReport, setShowReport] = useState(false);
   const [missing, setMissing] = useState<MissingDim[]>([]);
   const [auditMsg, setAuditMsg] = useState("");
+  const [tabletSave, setTabletSave] = useState<{ url: string; filename: string } | null>(null);
   const [viewPage, setViewPage] = useState(0); // 0-based page in multi-page PDF
   /** After ballooning, hide input panel so output can use full width for edit/zoom. */
   const [showInput, setShowInput] = useState(true);
@@ -531,13 +532,7 @@ export default function InspectionPage() {
     setAuditMsg("Auto ballooning running......");
     try {
       await flushUnsavedEdits();
-      let res = await api.runBalloonVersioned(jobId, 0);
-      if (res.needs_confirmation && res.candidate) {
-        const link = window.confirm(
-          `No part number was found in the title block.\n\nThe file name matches existing drawing "${res.candidate.file_name}" (Version ${res.candidate.latest_version}).\n\nOK = same drawing (reuse its balloon numbers)\nCancel = treat as a new drawing`,
-        );
-        res = await api.confirmDrawingMatch(jobId, link);
-      }
+      const res = await api.runBalloon(jobId, 0, numberingMode);
       await refresh(jobId, { bumpPreview: true, reportHint: showReport });
       setMode("edit");
       setShowInput(false);
@@ -547,25 +542,6 @@ export default function InspectionPage() {
       setAuditMsg("");
     } finally {
       setBallooning(false);
-      setBusy(false);
-    }
-  };
-
-  const onSaveDrawingMap = async () => {
-    if (!jobId) return;
-    const ok = window.confirm(
-      "Save the current balloons as this drawing's balloon map?\n\nFuture uploads of this drawing will reuse these numbers.",
-    );
-    if (!ok) return;
-    setBusy(true);
-    setErr("");
-    try {
-      await flushUnsavedEdits();
-      const res = await api.saveDrawingMap(jobId);
-      setAuditMsg(`Balloon map saved for Version ${res.version}: ${res.count} balloons. New features will start at ${res.max_balloon + 1}.`);
-    } catch (e: any) {
-      setErr(e.message || "Could not save balloon map");
-    } finally {
       setBusy(false);
     }
   };
@@ -632,6 +608,23 @@ export default function InspectionPage() {
 
   const areaForReport = (): WorkAreaState => workArea ?? savedAreaFilter;
 
+  const requestDownload = async (
+    kind: string,
+    filename: string,
+    filter: ReportDownloadFilter | undefined,
+    blobUrl: string,
+  ) => {
+    if (!jobId) throw new Error("No job loaded — upload a drawing first.");
+    if (isTabletDownload()) {
+      const file = await api.tabletExport(jobId, kind, filename, filter);
+      if (deliverTabletUrl(file.url) === "started") return { mode: "started" as const };
+      setTabletSave(file);
+      return { mode: "tap" as const };
+    }
+    const path = await api.downloadFile(blobUrl, filename);
+    return { mode: "saved" as const, path };
+  };
+
   const downloadAreaReport = async (format: "pdf" | "excel" | "csv" | "json" = "pdf") => {
     const area = areaForReport();
     if (!area || !jobId) {
@@ -664,10 +657,19 @@ export default function InspectionPage() {
               ? api.downloadCsv(jobId, filter)
               : api.downloadJson(jobId, filter);
       const ext = format === "pdf" ? "pdf" : format === "excel" ? "xlsx" : format;
-      const savedPath = await api.downloadFile(url, `${stem}_inspection_report${suffix}.${ext}`);
+      const filename = `${stem}_inspection_report${suffix}.${ext}`;
+      const saved = await requestDownload(format, filename, filter, url);
+      if (saved.mode === "tap") {
+        setAuditMsg("Tap Save. The file downloads to My Files → Download.");
+        return;
+      }
+      if (saved.mode === "started") {
+        setAuditMsg("Download started… Check My Files → Download.");
+        return;
+      }
       setAuditMsg(
-        savedPath.includes("\\") || savedPath.includes("/")
-          ? `Cropped area report (${format.toUpperCase()}) saved — page ${area.page} only:\n${savedPath}`
+        saved.path.includes("\\") || saved.path.includes("/")
+          ? `Cropped area report (${format.toUpperCase()}) saved — page ${area.page} only:\n${saved.path}`
           : `Cropped area report downloaded (page ${area.page} work area only).`,
       );
     } catch (e: any) {
@@ -699,14 +701,22 @@ export default function InspectionPage() {
         kind === "ballooned"
           ? `${stem}_ballooned.pdf`
           : srcName || `${jobId}_input.pdf`;
-      const savedPath = await api.downloadFile(url, filename);
+      const saved = await requestDownload(kind, filename, undefined, url);
       const label = kind === "ballooned" ? "Ballooned PDF" : "Input file";
+      if (saved.mode === "tap") {
+        setAuditMsg("Tap Save. The file downloads to My Files → Download.");
+        return filename;
+      }
+      if (saved.mode === "started") {
+        setAuditMsg(`${label} download started… Check My Files → Download.`);
+        return filename;
+      }
       setAuditMsg(
-        savedPath.includes("\\") || savedPath.includes("/")
-          ? `${label} saved to: ${savedPath}`
+        saved.path.includes("\\") || saved.path.includes("/")
+          ? `${label} saved to: ${saved.path}`
           : `${label} downloaded — check your Downloads folder.`,
       );
-      return savedPath;
+      return saved.path;
     } catch (e: any) {
       setAuditMsg("");
       const msg = e.message || "Download failed";
@@ -1120,8 +1130,6 @@ export default function InspectionPage() {
     void doUndo();
   };
 
-  const drawingVersion = (job as (Job & { drawing_version?: DrawingVersionInfo }) | null)?.drawing_version;
-
   return (
     <div className="app-shell">
       <div className="topbar">
@@ -1218,76 +1226,6 @@ export default function InspectionPage() {
 
       {err && <div className="error mb">{err}</div>}
       {auditMsg && <div className="ok mb">{auditMsg}</div>}
-
-      {drawingVersion && !drawingVersion.pending && drawingVersion.version && (
-        <div className="card wide mb" style={{ width: "100%" }}>
-          <div className="row-between mb">
-            <div>
-              <h3 style={{ margin: 0 }}>
-                <span
-                  style={{
-                    background: "#0B2E6B",
-                    color: "#fff",
-                    borderRadius: 6,
-                    padding: "2px 10px",
-                    marginRight: 8,
-                  }}
-                >
-                  Version {drawingVersion.version}
-                </span>
-                {drawingVersion.part_number || drawingVersion.drawing_key}
-              </h3>
-              <p className="muted" style={{ margin: "4px 0 0" }}>
-                {drawingVersion.new_version
-                  ? drawingVersion.version === 1
-                    ? "First upload of this drawing — balloon map saved."
-                    : "Changes found — saved as a new version. Changed / new features are boxed in dark blue."
-                  : "Matches the latest saved version — no new version created."}
-                {drawingVersion.identified_by === "file_name" ? " Identified by file name (no part number found)." : ""}
-              </p>
-            </div>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={busy}
-              onClick={() => void onSaveDrawingMap()}
-              title="Use the current (edited) balloons as the numbering map for future uploads of this drawing"
-            >
-              Save balloons as map
-            </button>
-          </div>
-          {(drawingVersion.changes?.length || 0) > 0 ? (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Balloon</th>
-                  <th>Status</th>
-                  <th>Page</th>
-                  <th>Old value</th>
-                  <th>New value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {drawingVersion.changes!.map((c) => (
-                  <tr key={`${c.status}-${c.balloon}`}>
-                    <td>
-                      {(() => {
-                        const now = currentHighlightMap(drawingVersion, job?.balloons).get(c.balloon);
-                        return now !== undefined && now !== c.balloon ? `${now} (was ${c.balloon})` : c.balloon;
-                      })()}
-                    </td>
-                    <td>{c.status}</td>
-                    <td>{c.page}</td>
-                    <td>{c.old_value || "—"}</td>
-                    <td>{c.new_value || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <p className="muted" style={{ margin: 0 }}>No changes in this version.</p>
-          )}
-        </div>
-      )}
 
       {missing.length > 0 && (
         <div className="card wide mb" style={{ width: "100%" }}>
@@ -1636,7 +1574,6 @@ export default function InspectionPage() {
               selected={selected}
               busy={busy && mode !== "delete" && mode !== "create" && mode !== "area" && !unsavedEdits}
               liveDraw
-              highlighted={highlightedBalloonNumbers(drawingVersion, job?.balloons)}
               pageGeometry={job?.page_geometry}
               workArea={
                 workArea && workArea.page === viewPage + 1
@@ -1737,7 +1674,34 @@ export default function InspectionPage() {
             await refresh(jobId);
           }}
           onError={(msg) => setErr(msg)}
+          onDownload={requestDownload}
+          onTabletTap={(file) => setTabletSave(file)}
         />
+      )}
+      {tabletSave && (
+        <div className="report-modal-backdrop" style={{ zIndex: 1300 }} onClick={() => setTabletSave(null)}>
+          <div className="report-modal" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginTop: 0 }}>Save {tabletSave.filename}</h2>
+            <p>
+              Tap Save. The file opens or Samsung shows a download. If it opens on screen, use the menu (⋮) → Download
+              or Save, then press Back to return here. Find it in My Files → Download.
+            </p>
+            <div className="row">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  openTabletUrl(tabletSave.url);
+                }}
+              >
+                Save {tabletSave.filename}
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={() => setTabletSave(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -2006,6 +1970,8 @@ function ReportPanel({
   onSaved,
   onClose,
   onError,
+  onDownload,
+  onTabletTap,
 }: {
   job: Job;
   jobId: string;
@@ -2014,6 +1980,13 @@ function ReportPanel({
   onSaved: () => Promise<void>;
   onClose: () => void;
   onError: (msg: string) => void;
+  onDownload: (
+    kind: string,
+    filename: string,
+    filter: ReportDownloadFilter | undefined,
+    blobUrl: string,
+  ) => Promise<{ mode: "saved"; path: string } | { mode: "started" } | { mode: "tap" }>;
+  onTabletTap: (file: { url: string; filename: string }) => void;
 }) {
   const [partNumber, setPartNumber] = useState(job.part_number || "");
   const [partName, setPartName] = useState(job.part_name || "");
@@ -2270,9 +2243,6 @@ function ReportPanel({
   const [flashBalloons, setFlashBalloons] = useState<Set<number>>(() => new Set());
   // Balloons whose instrument was picked by hand this session (before the flag is saved).
   const manualInstrRef = useRef<Set<number>>(new Set());
-  // Drawing version: Changed / New balloon rows are highlighted (follows the dimension, not the number).
-  const reportVersion = (job as Job & { drawing_version?: DrawingVersionInfo }).drawing_version;
-  const versionRows = new Set(highlightedBalloonNumbers(reportVersion, job.balloons));
   const suggestBalloons = new Map((job.balloons || []).map((b) => [b.balloon, b]));
   const suggestionFor = (r: ReportRow): InstrumentSuggestion =>
     suggestInstrument({
@@ -2473,7 +2443,7 @@ function ReportPanel({
       const pageSuffix = reportFilterSuffix(downloadFilter);
       const body = { ...payload(), rows: filteredRows };
       const needSave = reportDirty || rowsDirty;
-      const savedPath = await api.downloadReportPdfFile(
+      const saved = await api.downloadReportPdfFile(
         jobId,
         body,
         `${stem}_inspection_report${pageSuffix}.pdf`,
@@ -2486,9 +2456,18 @@ function ReportPanel({
       );
       setRowsDirty(false);
       setReportDirty(false);
+      if (typeof saved !== "string") {
+        if (saved.tablet === "needs-tap") onTabletTap({ url: saved.url, filename: saved.filename });
+        setMsg(
+          saved.tablet === "started"
+            ? "Download started… Check My Files → Download."
+            : "Tap Save. The file downloads to My Files → Download.",
+        );
+        return;
+      }
       setMsg(
-        savedPath.includes("\\") || savedPath.includes("/")
-          ? `Inspection report PDF saved to:\n${savedPath}`
+        saved.includes("\\") || saved.includes("/")
+          ? `Inspection report PDF saved to:\n${saved}`
           : "Inspection report PDF saved — check your Downloads folder (not the dist-desktop folder).",
       );
     } catch (e: any) {
@@ -2519,11 +2498,22 @@ function ReportPanel({
       const srcName = job.files?.[0]?.name || "";
       const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
       const ext = fmt === "pdf" ? "pdf" : "xlsx";
-      const savedPath = await api.downloadFile(
+      const filename = `${stem}_${name}${reportFilterSuffix(downloadFilter)}.${ext}`;
+      const saved = await onDownload(
+        `${kind}-${fmt}`,
+        filename,
+        downloadFilter,
         api.downloadTemplateReport(jobId, kind, fmt, downloadFilter),
-        `${stem}_${name}${reportFilterSuffix(downloadFilter)}.${ext}`,
       );
-      setMsg(`${name} ${fmtLabel} (${scopeLabel}) saved to:\n${savedPath}`);
+      if (saved.mode !== "saved") {
+        setMsg(
+          saved.mode === "started"
+            ? "Download started… Check My Files → Download."
+            : "Tap Save. The file downloads to My Files → Download.",
+        );
+        return;
+      }
+      setMsg(`${name} ${fmtLabel} (${scopeLabel}) saved to:\n${saved.path}`);
     } catch (e: any) {
       setMsg("");
       onError(e.message || `${name} download failed`);
@@ -2536,6 +2526,13 @@ function ReportPanel({
     setBusy(true);
     setMsg(`Preparing ${kind.toUpperCase()} (${scopeLabel})…`);
     try {
+      if (rowsDirty) {
+        await api.saveReportChunked(jobId, payload(), (m) => setMsg(m));
+      } else if (reportDirty) {
+        await api.saveReport(jobId, { ...payload(), rows: [] }, { localOnly: true, headersOnly: true });
+      }
+      setRowsDirty(false);
+      setReportDirty(false);
       const srcName = job.files?.[0]?.name || "";
       const stem = (srcName.replace(/\.[^.]+$/, "") || jobId).replace(/[<>:"|?*\\/]/g, "_");
       const pageSuffix = reportFilterSuffix(downloadFilter);
@@ -2546,8 +2543,16 @@ function ReportPanel({
             ? api.downloadCsv(jobId, downloadFilter)
             : api.downloadJson(jobId, downloadFilter);
       const ext = kind === "excel" ? "xlsx" : kind;
-      const savedPath = await api.downloadFile(url, `${stem}_inspection_report${pageSuffix}.${ext}`);
-      setMsg(`${kind.toUpperCase()} (${scopeLabel}) saved to:\n${savedPath}`);
+      const saved = await onDownload(kind, `${stem}_inspection_report${pageSuffix}.${ext}`, downloadFilter, url);
+      if (saved.mode !== "saved") {
+        setMsg(
+          saved.mode === "started"
+            ? "Download started… Check My Files → Download."
+            : "Tap Save. The file downloads to My Files → Download.",
+        );
+        return;
+      }
+      setMsg(`${kind.toUpperCase()} (${scopeLabel}) saved to:\n${saved.path}`);
     } catch (e: any) {
       onError(e.message || `${kind} download failed`);
     } finally {
@@ -2561,9 +2566,6 @@ function ReportPanel({
         <div className="row-between mb">
           <div>
             <h2 style={{ margin: 0 }}>Inspection Report</h2>
-            {reportVersion?.version && !reportVersion.pending && (
-              <span className="dv-version-badge">Version {reportVersion.version}</span>
-            )}
             <p className="muted" style={{ margin: "4px 0 0" }}>
               {APP_TITLE} · {filteredRows.length} characteristics · {scopeLabel}
             </p>
@@ -2887,7 +2889,6 @@ function ReportPanel({
                         >
                           {hint}
                           {flashBalloons.has(r.balloon) && <span className="instr-settings-flash" />}
-                          {versionRows.has(r.balloon) && <span className="dv-version-row" />}
                         </div>
                       );
                     })()}

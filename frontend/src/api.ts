@@ -48,6 +48,51 @@ function authHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/** Samsung / Android WebView ignores a blob saved after await fetch, and a URL with no extension is stored as .bin. */
+export function isTabletDownload(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return /Android/i.test(ua) || /iPhone|iPad|iPod/i.test(ua) || /\bwv\b/i.test(ua);
+}
+
+type DownloadBridge = { downloadUrl?: (url: string) => void };
+
+function deviceBridge(): DownloadBridge | null {
+  const w = window as Window & {
+    IEDevice?: DownloadBridge;
+    Android?: DownloadBridge;
+    IEAndroid?: DownloadBridge;
+    SmorxDevice?: DownloadBridge;
+  };
+  return w.IEDevice || w.Android || w.IEAndroid || w.SmorxDevice || null;
+}
+
+/** Native tablet app can save immediately. A browser still needs a second tap with no await before it. */
+export function deliverTabletUrl(url: string): "started" | "needs-tap" {
+  const bridge = deviceBridge();
+  if (bridge && typeof bridge.downloadUrl === "function") {
+    bridge.downloadUrl(url);
+    return "started";
+  }
+  return "needs-tap";
+}
+
+/** Call this from the Save button click itself. Do not await anything first. */
+export function openTabletUrl(url: string): void {
+  const bridge = deviceBridge();
+  if (bridge && typeof bridge.downloadUrl === "function") {
+    bridge.downloadUrl(url);
+    return;
+  }
+  window.location.assign(url);
+}
+
+function absoluteApi(path: string): string {
+  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  if (API) return `${API}${path}`;
+  return new URL(path, window.location.href).href;
+}
+
 /** Preview/download URLs for <img> and window.open (Bearer header not available). */
 function withAuthQuery(path: string): string {
   const token = authToken();
@@ -409,14 +454,6 @@ export const api = {
     req<{ count: number; balloons: Balloon[]; pass_log: unknown[]; page_count?: number }>(
       `/api/jobs/${jobId}/balloon?file_index=${fileIndex}&passes=1&use_tiles=true&numbering_mode=${numberingMode}`,
       { method: "POST" }),
-  runBalloonVersioned: (jobId: string, fileIndex = 0) =>
-    req<VersionedBalloonResult>(`/api/jobs/${jobId}/balloon/versioned?file_index=${fileIndex}`, { method: "POST" }),
-  confirmDrawingMatch: (jobId: string, link: boolean) =>
-    req<VersionedBalloonResult>(`/api/jobs/${jobId}/balloon/versioned/confirm?link=${link}`, { method: "POST" }),
-  saveDrawingMap: (jobId: string) =>
-    req<{ ok: boolean; version: number; count: number; max_balloon: number }>(
-      `/api/jobs/${jobId}/drawing-map/save`,
-      { method: "POST" }),
   getInstrumentRules: () => req<InstrumentRulesResponse>("/api/settings/instrument-rules"),
   saveInstrumentRules: (rules: EditableInstrumentRules) =>
     req<InstrumentRulesResponse>("/api/settings/instrument-rules", {
@@ -635,7 +672,34 @@ export const api = {
       `Building PDF (${payload.rows?.length || 0} rows)… window stays responsive — please wait`,
     );
     await new Promise((r) => setTimeout(r, 40));
+    if (isTabletDownload()) {
+      const file = await api.tabletExport(jobId, "pdf", filename, opts?.filter);
+      return { tablet: deliverTabletUrl(file.url), url: file.url, filename: file.filename };
+    }
     return api.downloadFile(api.downloadReportPdf(jobId, opts?.filter), filename);
+  },
+  /** One-time link whose path ends in .pdf / .xlsx so the tablet saves the real file. */
+  tabletExport: async (
+    jobId: string,
+    kind: string,
+    filename: string,
+    filter?: ReportDownloadFilter,
+  ) => {
+    const area = filter?.area;
+    const res = await req<{ path: string; filename: string }>(`/api/jobs/${jobId}/export-link`, {
+      method: "POST",
+      body: JSON.stringify({
+        kind,
+        filename,
+        page: filter?.page,
+        area_page: area?.page,
+        area_x: area?.x,
+        area_y: area?.y,
+        area_w: area?.width,
+        area_h: area?.height,
+      }),
+    });
+    return { url: absoluteApi(res.path), filename: res.filename };
   },
   authFetch: fetchBlob,
   /** Download API file to disk (Save dialog on desktop when available). */
@@ -924,39 +988,6 @@ export function measureStatus(
   if (m >= a && m <= b) return "yellow";
   return "red";
 }
-
-/** One row of a drawing version's change summary. */
-export type DrawingChange = {
-  balloon: number;
-  status: "Changed" | "New" | "Removed";
-  page: number;
-  old_value: string;
-  new_value: string;
-};
-
-/** Stored on the job as `drawing_version` after versioned auto ballooning. */
-export type DrawingVersionInfo = {
-  drawing_key: string;
-  identified_by?: "part_number" | "file_name";
-  part_number?: string;
-  version?: number;
-  new_version?: boolean;
-  changes?: DrawingChange[];
-  highlighted?: number[];
-  /** Highlighted dimensions by position — survive balloon renumbering. */
-  highlight_features?: { balloon: number; status: string; page: number; x: number; y: number; width: number; height: number }[];
-  pending?: boolean;
-};
-
-export type VersionedBalloonResult = {
-  job_id: string;
-  count: number;
-  page_count?: number;
-  balloons?: Balloon[];
-  drawing_version?: DrawingVersionInfo;
-  needs_confirmation?: boolean;
-  candidate?: { drawing_key: string; file_name: string; latest_version: number };
-};
 
 /** Instrument auto-selection rules from the settings API (rules: null = built-in defaults). */
 export type InstrumentRulesResponse = {
