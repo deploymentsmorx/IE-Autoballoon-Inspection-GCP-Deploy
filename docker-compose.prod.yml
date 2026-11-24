@@ -39,7 +39,7 @@ services:
     container_name: autoballoon-web
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "8464:8080"
     depends_on:
       api:
         condition: service_healthy

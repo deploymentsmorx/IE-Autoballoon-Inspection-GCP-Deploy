@@ -42,8 +42,6 @@ type Props = {
   onToggleDeleteSelect?: (no: number) => void;
   /** Persistent work area (PDF coords) — shown as green overlay. */
   workArea?: { x: number; y: number; width: number; height: number } | null;
-  /** Balloon numbers Changed / New in this drawing version — drawn green/orange like the PDF. */
-  highlighted?: number[];
 };
 
 function applyMat(m: number[] | undefined, x: number, y: number) {
@@ -124,10 +122,7 @@ export default function BalloonCanvas({
   deleteSelected = [],
   onToggleDeleteSelect,
   workArea = null,
-  highlighted,
 }: Props) {
-  const highlightedRef = useRef(highlighted);
-  highlightedRef.current = highlighted;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -489,28 +484,6 @@ export default function BalloonCanvas({
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(String(b.balloon), cx, cy + 0.5);
-
-        // Changed / New in this drawing version: bold green rim, orange fill, black number (as in the PDF).
-        if (!active && !markedDelete && highlightedRef.current?.includes(b.balloon)) {
-          ctx.strokeStyle = "#006400";
-          ctx.fillStyle = "#006400";
-          ctx.lineWidth = Math.max(2, 2.4 * Math.min(z, 2));
-          ctx.beginPath();
-          ctx.moveTo(startX, startY);
-          ctx.lineTo(tipX, tipY);
-          ctx.stroke();
-          drawArrowHead(tipX, tipY, startX, startY, Math.max(3, rad * 0.38 * aScale));
-          ctx.beginPath();
-          ctx.arc(cx, cy, rad, 0, Math.PI * 2);
-          ctx.fillStyle = "#FF5F15";
-          ctx.fill();
-          ctx.lineWidth = 3;
-          ctx.strokeStyle = "#006400";
-          ctx.stroke();
-          ctx.fillStyle = "#000";
-          ctx.font = `900 ${Math.max(9, 10 * Math.min(z, 1.9))}px Segoe UI, sans-serif`;
-          ctx.fillText(String(b.balloon), cx, cy + 0.5);
-        }
 
         if (detached) {
           const tip = pdfBoxToImg(b.x, b.y, b.width || 20, b.height || 12);

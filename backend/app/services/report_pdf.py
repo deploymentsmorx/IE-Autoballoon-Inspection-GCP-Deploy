@@ -24,9 +24,6 @@ C_ROW_B = (1.0, 1.0, 1.0)
 C_BORDER = (0.25, 0.25, 0.25)
 C_TEXT = (0, 0, 0)
 C_LABEL_TEXT = (0.1, 0.15, 0.25)
-C_VERSION_ROW = (1.0, 0.37, 0.08)  # fluorescent orange — Changed / New rows (same as the balloon)
-C_VERSION_TEXT = (0.043, 0.18, 0.42)  # dark blue "Version N" (same as the drawing stamp)
-
 
 def _parse_num(s: str) -> float | None:
     if s is None:
@@ -180,9 +177,6 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
     measure_cols = _measure_cols(payload)
     # Pre-resolve measure value maps once (avoid repeated dict lookups)
     measure_maps = [dict(col.get("values") or {}) for col in measure_cols]
-    # Drawing version: Changed / New balloon rows are filled fluorescent orange
-    version_hl = payload.get("version_highlight") or {}
-    version_rows = {str(n) for n in version_hl.get("rows") or []}
 
     headers = [
         "S.No", "Balloon\nNo.", "Reference", "Nominal", "Tol\n(low)", "Tol\n(high)",
@@ -213,18 +207,6 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
         shape.draw_rect(cert)
         shape.finish(color=(0.45, 0.45, 0.45), fill=C_CERT, width=0.5)
         shape.commit()
-        if version_hl.get("version"):
-            vlabel = f"Version {version_hl['version']}"
-            vr = fitz.Rect(cert.x0, cert.y1 + 3, cert.x1, cert.y1 + 19)
-            page.draw_rect(vr, color=C_VERSION_TEXT, fill=(1, 1, 1), width=1.2)
-            vw = fitz.get_text_length(vlabel, fontname="hebo", fontsize=9)
-            page.insert_text(
-                fitz.Point(vr.x0 + (vr.width - vw) / 2, vr.y1 - 4.5),
-                vlabel,
-                fontsize=9,
-                fontname="hebo",
-                color=C_VERSION_TEXT,
-            )
         tw = fitz.get_text_length(REPORT_CERT_NO, fontname="helv", fontsize=8.5)
         page.insert_text(
             fitz.Point(cert.x0 + (cert.width - tw) / 2, cert.y1 - 4.5),
@@ -328,8 +310,6 @@ def build_report_pdf(payload: dict, logo_path: Path | None = None) -> bytes:
             ]
 
             row_fill = C_ROW_A if ri % 2 == 0 else C_ROW_B
-            if bkey in version_rows:
-                row_fill = C_VERSION_ROW
             x = x0
             for i, cell in enumerate(cells):
                 r = fitz.Rect(x, y, x + col_w[i], y + row_h)
@@ -431,14 +411,6 @@ def build_report_xlsx(payload: dict, logo_path: Path | None = None) -> bytes:
     cert.border = Border(left=Side(style="thin", color="737373"), right=Side(style="thin", color="737373"),
                          top=Side(style="thin", color="737373"), bottom=Side(style="thin", color="737373"))
     cert.alignment = Alignment(horizontal="center", vertical="center")
-    version_hl = payload.get("version_highlight") or {}
-    version_rows = {str(n) for n in version_hl.get("rows") or []}
-    if version_hl.get("version"):
-        vc = ws.cell(2, n_cols, f"Version {version_hl['version']}")
-        vc.font = Font(bold=True, size=10, color=_xl_hex(C_VERSION_TEXT))
-        vside = Side(style="medium", color=_xl_hex(C_VERSION_TEXT))
-        vc.border = Border(left=vside, right=vside, top=vside, bottom=vside)
-        vc.alignment = Alignment(horizontal="center", vertical="center")
     t = ws.cell(1, title_c0, APP_REPORT_TITLE)
     t.font = Font(bold=True, size=14)
     t.alignment = Alignment(horizontal="center", vertical="center")
@@ -526,8 +498,6 @@ def build_report_xlsx(payload: dict, logo_path: Path | None = None) -> bytes:
             row.get("remarks", ""),
         ]
         band = band_fills[ri % 2]
-        if bkey in version_rows:
-            band = fill(C_VERSION_ROW)
         for i, val in enumerate(cells):
             value = val if isinstance(val, int) else _cell_text(val)
             cell = ws.cell(r, i + 1, value)
