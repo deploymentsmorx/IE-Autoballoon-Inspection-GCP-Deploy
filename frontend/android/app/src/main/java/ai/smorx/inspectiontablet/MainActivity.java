@@ -1,13 +1,20 @@
 package ai.smorx.inspectiontablet;
 
 import android.annotation.SuppressLint;
+import android.app.DownloadManager;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
+import android.webkit.CookieManager;
+import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
+import android.webkit.URLUtil;
 import android.webkit.WebView;
+import android.widget.Toast;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -44,6 +51,38 @@ public class MainActivity extends BridgeActivity {
         WebView webView = getBridge() != null ? getBridge().getWebView() : null;
         if (webView != null) {
             webView.addJavascriptInterface(new TabletDevice(this), "SmorxDevice");
+            webView.setDownloadListener(new DownloadListener() {
+                @Override
+                public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
+                    enqueueDownload(url, contentDisposition, mimeType);
+                }
+            });
+        }
+    }
+
+    void enqueueDownload(String url, String contentDisposition, String mimeType) {
+        if (url == null || url.startsWith("blob:") || url.startsWith("data:")) {
+            Toast.makeText(this, "This file cannot be saved. Update the app.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            String name = URLUtil.guessFileName(url, contentDisposition, mimeType);
+            DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+            request.setTitle(name);
+            request.setDescription(name);
+            request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
+            if (mimeType != null && !mimeType.isEmpty()) request.setMimeType(mimeType);
+            String cookie = CookieManager.getInstance().getCookie(url);
+            if (cookie != null) request.addRequestHeader("Cookie", cookie);
+            WebView webView = getBridge() != null ? getBridge().getWebView() : null;
+            if (webView != null) request.addRequestHeader("User-Agent", webView.getSettings().getUserAgentString());
+            DownloadManager manager = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+            if (manager == null) throw new IllegalStateException("no download manager");
+            manager.enqueue(request);
+            Toast.makeText(this, "Saving to My Files → Download", Toast.LENGTH_SHORT).show();
+        } catch (Exception error) {
+            Toast.makeText(this, "Download failed.", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -52,6 +91,20 @@ public class MainActivity extends BridgeActivity {
 
         TabletDevice(MainActivity activity) {
             this.activity = activity;
+        }
+
+        @JavascriptInterface
+        public void downloadUrl(String url) {
+            activity.runOnUiThread(() -> activity.enqueueDownload(url, null, mimeFor(url)));
+        }
+
+        private static String mimeFor(String url) {
+            String lower = url == null ? "" : url.toLowerCase();
+            if (lower.contains(".pdf")) return "application/pdf";
+            if (lower.contains(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+            if (lower.contains(".csv")) return "text/csv";
+            if (lower.contains(".json")) return "application/json";
+            return "application/octet-stream";
         }
 
         @JavascriptInterface
